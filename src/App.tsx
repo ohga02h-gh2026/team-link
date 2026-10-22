@@ -1,0 +1,1277 @@
+﻿import { useEffect, useState, type ChangeEvent } from 'react'
+import {
+  createDefaultPlayers,
+  deleteGame,
+  deleteTeam,
+  getGames,
+  getTeams,
+  saveGame,
+  saveTeam,
+  replaceAllData,
+  type Game,
+  type Team,
+} from './lib/database'
+
+type Page = 'teams' | 'games' | 'game-detail' | 'game-record'
+type RecordView = 'official' | 'original'
+
+function App() {
+  const [page, setPage] = useState<Page>('teams')
+  const [teams, setTeams] = useState<Team[]>([])
+  const [games, setGames] = useState<Game[]>([])
+  const [teamName, setTeamName] = useState('')
+  const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null)
+  const [gameName, setGameName] = useState('')
+  const [homeTeamId, setHomeTeamId] = useState('')
+  const [awayTeamId, setAwayTeamId] = useState('')
+  const [homeUniform, setHomeUniform] = useState<'white' | 'dark'>('white')
+  const [awayUniform, setAwayUniform] = useState<'white' | 'dark'>('dark')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState('')
+  const [selectedGameId, setSelectedGameId] = useState<string | null>(null)
+  const [homeLineup, setHomeLineup] = useState<string[]>([])
+  const [awayLineup, setAwayLineup] = useState<string[]>([])
+  const [lineupSetupQuarter, setLineupSetupQuarter] = useState(1)
+  const [subOutByTeam, setSubOutByTeam] = useState<Record<string, string>>({})
+  const [subInByTeam, setSubInByTeam] = useState<Record<string, string>>({})
+  const [selectedPlayerId, setSelectedPlayerId] = useState<string>('')
+  const [recordView, setRecordView] = useState<RecordView>('official')
+  const [freeThrowModalOpen, setFreeThrowModalOpen] = useState(false)
+  const [freeThrowCount, setFreeThrowCount] = useState<1 | 2 | 3>(2)
+  const [freeThrowResults, setFreeThrowResults] = useState<Array<boolean | null>>([null, null])
+  const [timeoutLimit, setTimeoutLimit] = useState<number>(() => { const value = Number(localStorage.getItem('team-link-timeout-limit') ?? '1'); return [1, 2, 3].includes(value) ? value : 1 })
+
+  async function refreshData() {
+    const [savedTeams, savedGames] = await Promise.all([getTeams(), getGames()])
+    setTeams(savedTeams)
+    setGames(
+      savedGames.sort(
+        (a, b) =>
+          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+      ),
+    )
+  }
+
+  useEffect(() => {
+    async function loadData() {
+      try {
+        await refreshData()
+      } catch (error) {
+        console.error(error)
+        setMessage('データを読み込めませんでした。ページを再読み込みしてください。')
+      } finally {
+        setLoading(false)
+      }
+    }
+    void loadData()
+  }, [])
+
+  async function handleCreateTeam() {
+    const name = teamName.trim()
+    if (!name) {
+      setMessage('チーム名を入力してください。')
+      return
+    }
+
+    setSaving(true)
+    setMessage('')
+    const team: Team = {
+      id: crypto.randomUUID(),
+      name,
+      createdAt: new Date().toISOString(),
+      players: createDefaultPlayers(),
+    }
+
+    try {
+      await saveTeam(team)
+      await refreshData()
+      setTeamName('')
+      setExpandedTeamId(team.id)
+      setMessage(`${name} を保存しました。`)
+    } catch (error) {
+      console.error(error)
+      setMessage('チームを保存できませんでした。')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleDeleteTeam(team: Team) {
+    const usedByGame = games.some(
+      (game) => game.homeTeamId === team.id || game.awayTeamId === team.id,
+    )
+    if (usedByGame) {
+      setMessage('このチームは試合に登録されています。先に関連する試合を削除してください。')
+      return
+    }
+    if (!window.confirm(`「${team.name}」を削除しますか？`)) return
+
+    try {
+      await deleteTeam(team.id)
+      await refreshData()
+      setMessage(`${team.name} を削除しました。`)
+    } catch (error) {
+      console.error(error)
+      setMessage('チームを削除できませんでした。')
+    }
+  }
+
+  async function handlePlayerNameChange(
+    team: Team,
+    playerId: string,
+    newName: string,
+  ) {
+    const updatedTeam: Team = {
+      ...team,
+      players: team.players.map((player) =>
+        player.id === playerId ? { ...player, name: newName } : player,
+      ),
+    }
+
+    try {
+      await saveTeam(updatedTeam)
+      setTeams((current) =>
+        current.map((item) => (item.id === team.id ? updatedTeam : item)),
+      )
+      setMessage('選手名を保存しました。')
+    } catch (error) {
+      console.error(error)
+      setMessage('選手名を保存できませんでした。')
+    }
+  }
+
+  async function handleCreateGame() {
+    if (teams.length < 2) {
+      setMessage('試合を作成するには、先に2チーム以上登録してください。')
+      return
+    }
+    if (!homeTeamId || !awayTeamId) {
+      setMessage('ホームチームとアウェイチームを選択してください。')
+      return
+    }
+    if (homeTeamId === awayTeamId) {
+      setMessage('異なるチームを選択してください。')
+      return
+    }
+    if (homeUniform === awayUniform) {
+      setMessage('両チームのユニフォームの色を分けてください。')
+      return
+    }
+
+    setSaving(true)
+    setMessage('')
+    const now = new Date().toISOString()
+    const homeTeam = teams.find((team) => team.id === homeTeamId)
+    const awayTeam = teams.find((team) => team.id === awayTeamId)
+    const game: Game = {
+      id: crypto.randomUUID(),
+      name: gameName.trim() || `${homeTeam?.name ?? 'ホーム'} vs ${awayTeam?.name ?? 'アウェイ'}`,
+      homeTeamId,
+      awayTeamId,
+      homeUniform,
+      awayUniform,
+      status: 'scheduled',
+      currentQuarter: 1,
+      events: [],
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    try {
+      await saveGame(game)
+      await refreshData()
+      setGameName('')
+      setMessage('試合を作成して保存しました。')
+    } catch (error) {
+      console.error(error)
+      setMessage('試合を保存できませんでした。')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleGameStatusChange(game: Game, status: Game['status']) {
+    const updatedGame: Game = { ...game, status, updatedAt: new Date().toISOString() }
+    try {
+      await saveGame(updatedGame)
+      await refreshData()
+      setMessage('試合状況を保存しました。')
+    } catch (error) {
+      console.error(error)
+      setMessage('試合状況を保存できませんでした。')
+    }
+  }
+
+  async function handleDeleteGame(game: Game) {
+    if (!window.confirm(`「${game.name}」を削除しますか？この操作は取り消せません。`)) {
+      return
+    }
+    try {
+      await deleteGame(game.id)
+      await refreshData()
+      if (selectedGameId === game.id) {
+        setSelectedGameId(null)
+        setPage('games')
+      }
+      setMessage('試合を削除しました。')
+    } catch (error) {
+      console.error(error)
+      setMessage('試合を削除できませんでした。')
+    }
+  }
+
+  function teamLabel(teamId: string) {
+    return teams.find((team) => team.id === teamId)?.name ?? '削除されたチーム'
+  }
+
+  function openGame(game: Game) {
+    setSelectedGameId(game.id)
+    setLineupSetupQuarter(game.currentQuarter || 1)
+    const storedLineups = (game as Game & { quarterLineups?: Record<number, { home: string[]; away: string[] }> }).quarterLineups
+    setHomeLineup(storedLineups?.[game.currentQuarter]?.home ?? game.homeLineup ?? [])
+    setAwayLineup(storedLineups?.[game.currentQuarter]?.away ?? game.awayLineup ?? [])
+    // 終了済みの試合は先発設定を経由せず、結果画面を開く
+    setPage(game.status === 'completed' ? 'game-record' : 'game-detail')
+    setMessage('')
+  }
+
+  function exportGameStatsCsv() {
+    const game = games.find((item) => item.id === selectedGameId)
+    if (!game) return
+    const csvCell = (value: string | number) => `"${String(value).replace(/"/g, '""')}"`
+    const rows: (string | number)[][] = [['チーム', '背番号', '選手名', '得点', 'アシスト', 'OFリバウンド', 'DFリバウンド', 'スティール', 'ブロック', 'ターンオーバー', 'ファウル']]
+    for (const team of teams.filter((item) => item.id === game.homeTeamId || item.id === game.awayTeamId)) {
+      const lineup = team.id === game.homeTeamId ? (game.homeLineup ?? []) : (game.awayLineup ?? [])
+      for (const player of team.players.filter((item) => lineup.includes(item.id))) {
+        const events = game.events.filter((event) => !event.cancelled && event.teamId === team.id && event.playerId === player.id)
+        const count = (type: string) => events.filter((event) => event.type === type).length
+        const points = events.filter((event) => (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + (event.points ?? (event.type === 'freeThrow' ? 1 : 0)), 0)
+        rows.push([team.name, player.number, player.name, points, count('assist'), count('offensiveRebound'), count('defensiveRebound'), count('steal'), count('block'), count('turnover'), count('foul')])
+      }
+    }
+    const csv = '\uFEFF' + rows.map((row) => row.map(csvCell).join(',')).join('\r\n')
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${game.name.replace(/[\\/:*?"<>|]/g, '_')}_選手別スタッツ.csv`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function handleFinishGame() {
+    const game = games.find((item) => item.id === selectedGameId)
+    if (!game) {
+      setMessage('試合が見つかりません。')
+      return
+    }
+    if (game.status === 'completed') {
+      setMessage('この試合はすでに終了しています。')
+      return
+    }
+    const homeScore = game.events.filter((event) => !event.cancelled && event.teamId === game.homeTeamId && (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + (event.points ?? (event.type === 'freeThrow' ? 1 : 0)), 0)
+    const awayScore = game.events.filter((event) => !event.cancelled && event.teamId === game.awayTeamId && (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + (event.points ?? (event.type === 'freeThrow' ? 1 : 0)), 0)
+    if (!window.confirm(`試合を終了しますか？\n\n${teamLabel(game.homeTeamId)}  ${homeScore} - ${awayScore}  ${teamLabel(game.awayTeamId)}\n\n終了後も結果の確認はできますが、試合記録は追加できなくなります。`)) return
+
+    setSaving(true)
+    setMessage('')
+    try {
+      await saveGame({ ...game, status: 'completed', updatedAt: new Date().toISOString() })
+      await refreshData()
+      setMessage('試合を終了し、最終結果を保存しました。')
+    } catch (error) {
+      console.error(error)
+      setMessage('試合終了を保存できませんでした。')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function toggleLineup(
+    playerId: string,
+    side: 'home' | 'away',
+  ) {
+    const lineup = side === 'home' ? homeLineup : awayLineup
+    const setLineup = side === 'home' ? setHomeLineup : setAwayLineup
+
+    if (lineup.includes(playerId)) {
+      setLineup(lineup.filter((id) => id !== playerId))
+      return
+    }
+    if (lineup.length >= 5) {
+      setMessage('先発メンバーは各チーム5人まで選択できます。')
+      return
+    }
+    setLineup([...lineup, playerId])
+    setMessage('')
+  }
+
+  async function handleSaveLineups() {
+    const game = games.find((item) => item.id === selectedGameId)
+    if (!game) {
+      setMessage('試合が見つかりません。試合一覧に戻ってください。')
+      return
+    }
+    if (homeLineup.length !== 5 || awayLineup.length !== 5) {
+      setMessage('ホーム・アウェイそれぞれ5人ずつ選択してください。')
+      return
+    }
+
+    setSaving(true)
+    setMessage('')
+    const existingQuarterLineups = (game as Game & { quarterLineups?: Record<number, { home: string[]; away: string[] }> }).quarterLineups ?? {}
+    const quarterLineups = { ...existingQuarterLineups, [lineupSetupQuarter]: { home: [...homeLineup], away: [...awayLineup] } }
+    const updatedGame = {
+      ...game,
+      homeLineup: lineupSetupQuarter === 1 ? [...homeLineup] : (game.homeLineup ?? [...homeLineup]),
+      awayLineup: lineupSetupQuarter === 1 ? [...awayLineup] : (game.awayLineup ?? [...awayLineup]),
+      quarterLineups,
+      currentQuarter: lineupSetupQuarter,
+      updatedAt: new Date().toISOString(),
+    } as Game
+    try {
+      await saveGame(updatedGame)
+      await refreshData()
+      setMessage(`${quarterLabel(lineupSetupQuarter)}の出場メンバーを保存しました。`)
+      setPage('game-record')
+      setSelectedPlayerId(homeLineup[0] ?? '')
+    } catch (error) {
+      console.error(error)
+      setMessage('先発メンバーを保存できませんでした。')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleRecordEvent(
+    teamId: string,
+    playerId: string,
+    type: Game['events'][number]['type'],
+    points?: number,
+    made?: boolean,
+  ) {
+    const game = games.find((item) => item.id === selectedGameId)
+    if (!game) {
+      setMessage('試合が見つかりません。')
+      return
+    }
+    const event = {
+      id: crypto.randomUUID(),
+      type,
+      teamId,
+      playerId,
+      points,
+      made: type === 'shot' || type === 'freeThrow' ? (made ?? true) : undefined,
+      quarter: game.currentQuarter,
+      createdAt: new Date().toISOString(),
+    }
+    const updatedGame: Game = {
+      ...game,
+      status: 'in-progress',
+      events: [...game.events, event],
+      updatedAt: new Date().toISOString(),
+    }
+    try {
+      await saveGame(updatedGame)
+      await refreshData()
+      setMessage('記録を保存しました。')
+    } catch (error) {
+      console.error(error)
+      setMessage('記録を保存できませんでした。')
+    }
+  }
+
+  async function handleSaveFreeThrows() {
+    const game = games.find((item) => item.id === selectedGameId)
+    const player = [...(homeTeam?.players ?? []), ...(awayTeam?.players ?? [])].find((item) => item.id === selectedPlayerId)
+    const team = homeTeam?.players.some((item) => item.id === selectedPlayerId) ? homeTeam : awayTeam
+    if (!game || !player || !team) {
+      setMessage('フリースローを記録する選手を選択してください。')
+      return
+    }
+    const results = freeThrowResults.slice(0, freeThrowCount)
+    if (results.some((result) => result === null)) {
+      setMessage('各フリースローの成功・失敗を選択してください。')
+      return
+    }
+    const createdAt = new Date().toISOString()
+    const madeCount = results.filter(Boolean).length
+    // フリースローは1回の獲得につき1イベントで保存し、試投数・成功数をまとめて保持する。
+    const newEvent = {
+      id: crypto.randomUUID(),
+      type: 'freeThrow' as const,
+      teamId: team.id,
+      playerId: player.id,
+      points: madeCount,
+      made: madeCount > 0,
+      freeThrowAttempts: freeThrowCount,
+      quarter: game.currentQuarter,
+      createdAt,
+    } as Game['events'][number] & { freeThrowAttempts: number }
+    setSaving(true)
+    try {
+      await saveGame({
+        ...game,
+        status: 'in-progress',
+        events: [...game.events, newEvent],
+        updatedAt: new Date().toISOString(),
+      })
+      await refreshData()
+      setFreeThrowModalOpen(false)
+      setFreeThrowResults(Array(freeThrowCount).fill(null))
+      setMessage(`フリースロー（${freeThrowCount}本中${madeCount}本成功）を1件保存しました。`)
+    } catch (error) {
+      console.error(error)
+      setMessage('フリースローを保存できませんでした。')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function quarterLabel(quarter: number) {
+    if (quarter >= 1 && quarter <= 4) return `${quarter}Q`
+    if (quarter === 5) return 'OT'
+    if (quarter === 6) return '2OT'
+    return `${quarter}Q`
+  }
+
+  async function handleTimeout(teamId: string) {
+    const game = games.find((item) => item.id === selectedGameId)
+    if (!game) return
+    const used = game.events.filter(event => !event.cancelled && event.type === 'timeout' && event.teamId === teamId && event.quarter === game.currentQuarter).length
+    if (used >= timeoutLimit) {
+      setMessage(`${quarterLabel(game.currentQuarter)}のタイムアウト上限（${timeoutLimit}回）に達しています。設定から上限を変更できます。`)
+      return
+    }
+    const event = { id: crypto.randomUUID(), type: 'timeout' as const, teamId, quarter: game.currentQuarter, createdAt: new Date().toISOString() }
+    try {
+      await saveGame({ ...game, status: 'in-progress', events: [...game.events, event], updatedAt: new Date().toISOString() })
+      await refreshData()
+      setMessage(`${quarterLabel(game.currentQuarter)}のタイムアウトを記録しました。`)
+    } catch (error) {
+      console.error(error)
+      setMessage('タイムアウトを保存できませんでした。')
+    }
+  }
+
+  async function handleQuarterChange(quarter: number) {
+    const game = games.find((item) => item.id === selectedGameId)
+    if (!game) return
+    if (quarter < 1 || quarter > 6) return
+    setLineupSetupQuarter(quarter)
+    setHomeLineup([])
+    setAwayLineup([])
+    setMessage(`${quarterLabel(quarter)}の先発メンバーを選択してください。`)
+    setPage('game-detail')
+  }
+
+  async function handleSubstitution(team: Team, outPlayerId: string, inPlayerId: string) {
+    const game = games.find(item => item.id === selectedGameId)
+    if (!game || !outPlayerId || !inPlayerId || outPlayerId === inPlayerId) {
+      setMessage('交代する選手と入る選手を選択してください。')
+      return
+    }
+    const stored = (game as Game & { quarterLineups?: Record<number, { home: string[]; away: string[] }> }).quarterLineups ?? {}
+    const side = team.id === game.homeTeamId ? 'home' : 'away'
+    const fallback = side === 'home' ? (game.homeLineup ?? []) : (game.awayLineup ?? [])
+    const active = [...(stored[game.currentQuarter]?.[side] ?? fallback)]
+    if (!active.includes(outPlayerId) || active.includes(inPlayerId)) {
+      setMessage('交代元は出場中、交代で入る選手はベンチの選手を選んでください。')
+      return
+    }
+    const next = active.map(id => id === outPlayerId ? inPlayerId : id)
+    const quarterLineups = { ...stored, [game.currentQuarter]: { ...(stored[game.currentQuarter] ?? { home: game.homeLineup ?? [], away: game.awayLineup ?? [] }), [side]: next } }
+    const event = { id: crypto.randomUUID(), type: 'substitution' as const, teamId: team.id, playerId: inPlayerId, relatedPlayerId: outPlayerId, quarter: game.currentQuarter, createdAt: new Date().toISOString() }
+    try {
+      await saveGame({ ...game, quarterLineups, events: [...game.events, event], status: 'in-progress', updatedAt: new Date().toISOString() } as Game)
+      await refreshData()
+      setSelectedPlayerId(inPlayerId)
+      setSubOutByTeam(current => ({ ...current, [team.id]: '' }))
+      setSubInByTeam(current => ({ ...current, [team.id]: '' }))
+      setMessage(`${team.name}の選手交代を記録しました。`)
+    } catch (error) {
+      console.error(error)
+      setMessage('選手交代を保存できませんでした。')
+    }
+  }
+
+  async function handleUndoLastEvent() {
+    const game = games.find((item) => item.id === selectedGameId)
+    if (!game) return
+    const lastEvent = [...game.events].reverse().find((event) => !event.cancelled)
+    if (!lastEvent) {
+      setMessage('取り消せる記録がありません。')
+      return
+    }
+    const updatedGame: Game = {
+      ...game,
+      events: game.events.map((event) => event.id === lastEvent.id ? { ...event, cancelled: true } : event),
+      updatedAt: new Date().toISOString(),
+    }
+    try {
+      await saveGame(updatedGame)
+      await refreshData()
+      setMessage('直前の記録を取り消しました。')
+    } catch (error) {
+      console.error(error)
+      setMessage('記録を取り消せませんでした。')
+    }
+  }
+
+  async function handleExportBackup() {
+    try {
+      const [savedTeams, savedGames] = await Promise.all([getTeams(), getGames()])
+      const backup = {
+        format: 'TEAM_LINK_BACKUP',
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        teams: savedTeams,
+        games: savedGames,
+        settings: { timeoutLimit },
+      }
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `team-link-backup-${new Date().toISOString().slice(0, 10)}.json`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setMessage(`バックアップを作成しました（チーム${savedTeams.length}件・試合${savedGames.length}件）。ファイルを安全な場所に保管してください。`)
+    } catch (error) {
+      console.error(error)
+      setMessage('バックアップを作成できませんでした。')
+    }
+  }
+
+  async function handleImportBackup(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    try {
+      const parsed: unknown = JSON.parse(await file.text())
+      if (!parsed || typeof parsed !== 'object') throw new Error('invalid backup')
+      const data = parsed as { format?: unknown; version?: unknown; teams?: unknown; games?: unknown; settings?: { timeoutLimit?: unknown } }
+      const validTeams = Array.isArray(data.teams) && data.teams.every((team: any) => team && typeof team.id === 'string' && typeof team.name === 'string' && Array.isArray(team.players))
+      const validGames = Array.isArray(data.games) && data.games.every((game: any) => game && typeof game.id === 'string' && typeof game.name === 'string' && Array.isArray(game.events))
+      if (data.format !== 'TEAM_LINK_BACKUP' || data.version !== 1 || !validTeams || !validGames) {
+        throw new Error('invalid backup format')
+      }
+      const incomingTeams = data.teams as Team[]
+      const incomingGames = data.games as Game[]
+      if (!window.confirm(`バックアップを復元しますか？\n\nチーム：${incomingTeams.length}件\n試合：${incomingGames.length}件\n\n現在この端末に保存されているチーム・試合データはすべて置き換わります。先に現在のデータもバックアップすることをおすすめします。`)) return
+      setSaving(true)
+      await replaceAllData(incomingTeams, incomingGames)
+      const savedLimit = Number(data.settings?.timeoutLimit)
+      if ([1, 2, 3].includes(savedLimit)) {
+        setTimeoutLimit(savedLimit)
+        localStorage.setItem('team-link-timeout-limit', String(savedLimit))
+      }
+      await refreshData()
+      setSelectedGameId(null)
+      setPage('teams')
+      setMessage(`バックアップを復元しました（チーム${incomingTeams.length}件・試合${incomingGames.length}件）。`)
+    } catch (error) {
+      console.error(error)
+      setMessage('復元できませんでした。TEAM LINKで作成した正しいバックアップファイルか確認してください。')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) {
+    return <main className="min-h-screen bg-slate-100 p-6">データを読み込んでいます...</main>
+  }
+
+  const selectedGame = games.find((game) => game.id === selectedGameId)
+  const homeTeam = selectedGame
+    ? teams.find((team) => team.id === selectedGame.homeTeamId)
+    : undefined
+  const awayTeam = selectedGame
+    ? teams.find((team) => team.id === selectedGame.awayTeamId)
+    : undefined
+
+  return (
+    <main className="min-h-screen bg-slate-100 px-4 py-8 text-slate-900 sm:px-8">
+      <div className="mx-auto max-w-5xl">
+        <header className="mb-8">
+          <p className="text-sm font-bold uppercase tracking-widest text-blue-700">TEAM LINK</p>
+          <h1 className="mt-2 text-3xl font-bold sm:text-4xl">バスケットボール管理</h1>
+          <p className="mt-2 text-slate-600">チームと試合の情報を管理します。</p>
+        </header>
+
+        {page !== 'game-detail' && page !== 'game-record' && (
+          <nav className="mb-6 grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => { setPage('teams'); setMessage('') }}
+              className={`rounded-xl px-4 py-3 font-bold ${page === 'teams' ? 'bg-blue-700 text-white' : 'border border-slate-300 bg-white text-slate-700'}`}
+            >
+              チーム管理
+            </button>
+            <button
+              type="button"
+              onClick={() => { setPage('games'); setMessage('') }}
+              className={`rounded-xl px-4 py-3 font-bold ${page === 'games' ? 'bg-blue-700 text-white' : 'border border-slate-300 bg-white text-slate-700'}`}
+            >
+              試合管理
+            </button>
+          </nav>
+        )}
+
+        {message && (
+          <div role="status" className="mb-5 rounded-xl bg-blue-50 px-4 py-3 text-sm text-blue-800">
+            {message}
+          </div>
+        )}
+
+        {(page === 'teams' || page === 'games') && (
+          <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+            <h2 className="text-lg font-bold">バックアップ・復元</h2>
+            <p className="mt-1 text-sm text-slate-600">チーム・選手・試合記録をファイルに保存します。データはクラウドに送信されません。</p>
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+              <button type="button" disabled={saving} onClick={() => void handleExportBackup()} className="rounded-xl bg-blue-700 px-5 py-3 font-bold text-white disabled:opacity-50">
+                バックアップを保存
+              </button>
+              <label className="flex cursor-pointer items-center justify-center rounded-xl border border-slate-300 bg-white px-5 py-3 text-center font-bold text-slate-700 hover:bg-slate-50">
+                バックアップから復元
+                <input type="file" accept=".json,application/json" disabled={saving} onChange={(event) => void handleImportBackup(event)} className="sr-only" />
+              </label>
+            </div>
+            <p className="mt-3 text-xs leading-relaxed text-amber-800">復元すると、現在のチーム・試合データはバックアップの内容に置き換わります。復元前に現在のデータも保存してください。</p>
+          </section>
+        )}
+
+        {page === 'teams' && (
+          <>
+            <section className="mb-8 rounded-2xl bg-white p-5 shadow-sm sm:p-6">
+              <h2 className="text-xl font-bold">チームを作成</h2>
+              <p className="mt-1 text-sm text-slate-500">背番号00、0、1〜99の選手が自動作成されます。</p>
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+                <input
+                  value={teamName}
+                  onChange={(event) => setTeamName(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === 'Enter') void handleCreateTeam() }}
+                  placeholder="チーム名"
+                  maxLength={60}
+                  className="min-w-0 flex-1 rounded-xl border border-slate-300 px-4 py-3"
+                />
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => void handleCreateTeam()}
+                  className="rounded-xl bg-blue-700 px-6 py-3 font-bold text-white disabled:opacity-50"
+                >
+                  {saving ? '保存中...' : 'チームを作成'}
+                </button>
+              </div>
+            </section>
+
+            <section>
+              <h2 className="mb-4 text-2xl font-bold">チーム一覧（{teams.length}）</h2>
+              {teams.length === 0 ? (
+                <p className="rounded-xl bg-white p-6 text-slate-500">まずはチームを作成してください。</p>
+              ) : (
+                <div className="space-y-4">
+                  {teams.map((team) => (
+                    <article key={team.id} className="overflow-hidden rounded-2xl bg-white shadow-sm">
+                      <div className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <h3 className="text-xl font-bold">{team.name}</h3>
+                          <p className="mt-1 text-sm text-slate-500">選手 {team.players.length} 名分</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setExpandedTeamId(expandedTeamId === team.id ? null : team.id)}
+                            className="rounded-lg border border-blue-700 px-4 py-2 font-semibold text-blue-700"
+                          >
+                            {expandedTeamId === team.id ? '閉じる' : '選手を管理'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteTeam(team)}
+                            className="rounded-lg border border-red-200 px-4 py-2 font-semibold text-red-700"
+                          >
+                            削除
+                          </button>
+                        </div>
+                      </div>
+                      {expandedTeamId === team.id && (
+                        <div className="border-t border-slate-200 p-4 sm:p-5">
+                          <h4 className="mb-3 font-bold">選手名の編集</h4>
+                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                            {team.players.map((player) => (
+                              <label key={player.id} className="flex items-center gap-3 rounded-xl border border-slate-200 p-3">
+                                <span className="w-12 shrink-0 text-center font-bold">#{player.number}</span>
+                                <input
+                                  key={`${player.id}-${player.name}`}
+                                  defaultValue={player.name}
+                                  aria-label={`背番号${player.number}の選手名`}
+                                  maxLength={40}
+                                  onBlur={(event) => {
+                                    const newName = event.target.value.trim()
+                                    if (newName && newName !== player.name) {
+                                      void handlePlayerNameChange(team, player.id, newName)
+                                    } else if (!newName) {
+                                      event.target.value = player.name
+                                    }
+                                  }}
+                                  className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2"
+                                />
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
+        )}
+
+        {page === 'games' && (
+          <>
+            <section className="mb-8 rounded-2xl bg-white p-5 shadow-sm sm:p-6">
+              <h2 className="text-xl font-bold">新しい試合を作成</h2>
+              <p className="mt-1 text-sm text-slate-500">対戦チームとユニフォームを設定します。</p>
+              {teams.length < 2 ? (
+                <div className="mt-4 rounded-xl bg-amber-50 p-4 text-amber-900">
+                  試合を作成するには、先に「チーム管理」で2チーム以上作成してください。
+                  <button type="button" onClick={() => setPage('teams')} className="mt-3 block font-bold underline">
+                    チーム管理へ
+                  </button>
+                </div>
+              ) : (
+                <div className="mt-5 space-y-5">
+                  <label className="block">
+                    <span className="mb-2 block text-sm font-semibold">試合名（任意）</span>
+                    <input
+                      value={gameName}
+                      onChange={(event) => setGameName(event.target.value)}
+                      maxLength={100}
+                      placeholder="例：練習試合 10/18"
+                      className="w-full rounded-xl border border-slate-300 px-4 py-3"
+                    />
+                  </label>
+                  <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                    <label className="block">
+                      <span className="mb-2 block font-semibold">ホームチーム</span>
+                      <select value={homeTeamId} onChange={(event) => setHomeTeamId(event.target.value)} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3">
+                        <option value="">チームを選択</option>
+                        {teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="mb-2 block font-semibold">アウェイチーム</span>
+                      <select value={awayTeamId} onChange={(event) => setAwayTeamId(event.target.value)} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3">
+                        <option value="">チームを選択</option>
+                        {teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                    <label className="block">
+                      <span className="mb-2 block font-semibold">ホームのユニフォーム</span>
+                      <select value={homeUniform} onChange={(event) => setHomeUniform(event.target.value as 'white' | 'dark')} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3">
+                        <option value="white">白</option>
+                        <option value="dark">濃色</option>
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="mb-2 block font-semibold">アウェイのユニフォーム</span>
+                      <select value={awayUniform} onChange={(event) => setAwayUniform(event.target.value as 'white' | 'dark')} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3">
+                        <option value="white">白</option>
+                        <option value="dark">濃色</option>
+                      </select>
+                    </label>
+                  </div>
+                  <button type="button" disabled={saving} onClick={() => void handleCreateGame()} className="w-full rounded-xl bg-blue-700 px-6 py-4 font-bold text-white disabled:opacity-50">
+                    {saving ? '保存中...' : '試合を作成して保存'}
+                  </button>
+                </div>
+              )}
+            </section>
+
+            <section>
+              <h2 className="mb-4 text-2xl font-bold">試合一覧（{games.length}）</h2>
+              {games.length === 0 ? (
+                <p className="rounded-xl bg-white p-6 text-slate-500">まだ試合がありません。上のフォームから作成してください。</p>
+              ) : (
+                <div className="space-y-4">
+                  {games.map((game) => (
+                    <article key={game.id} className="rounded-2xl bg-white p-5 shadow-sm">
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <h3 className="text-lg font-bold">{game.name}</h3>
+                          <p className="mt-2 text-slate-700">
+                            {teamLabel(game.homeTeamId)} <span className="px-2 font-bold text-slate-400">VS</span> {teamLabel(game.awayTeamId)}
+                          </p>
+                          <p className="mt-1 text-sm text-slate-500">
+                            ホーム：{game.homeUniform === 'white' ? '白' : '濃色'} ／ アウェイ：{game.awayUniform === 'white' ? '白' : '濃色'}
+                          </p>
+                          <p className="mt-1 text-sm text-slate-500">作成日：{new Date(game.createdAt).toLocaleDateString('ja-JP')}</p>
+                          {game.status === 'completed' && (
+                            <p className="mt-3 inline-flex rounded-full bg-slate-100 px-3 py-1 text-sm font-bold text-slate-700">試合終了 · 最終スコア：{game.events.filter(e => !e.cancelled && e.teamId === game.homeTeamId && (e.type === 'shot' || e.type === 'freeThrow') && e.made).reduce((sum, e) => sum + (e.points ?? (e.type === 'freeThrow' ? 1 : 0)), 0)} - {game.events.filter(e => !e.cancelled && e.teamId === game.awayTeamId && (e.type === 'shot' || e.type === 'freeThrow') && e.made).reduce((sum, e) => sum + (e.points ?? (e.type === 'freeThrow' ? 1 : 0)), 0)}</p>
+                          )}
+                        </div>
+                        <div className="flex flex-col gap-2 sm:w-44">
+                          <button type="button" onClick={() => openGame(game)} className="rounded-lg bg-blue-700 px-3 py-3 text-sm font-bold text-white">
+                            試合を開く・先発設定
+                          </button>
+                          <label className="text-sm font-semibold">
+                            試合状況
+                            <select value={game.status} onChange={(event) => void handleGameStatusChange(game, event.target.value as Game['status'])} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2">
+                              <option value="scheduled">試合前</option>
+                              <option value="in-progress">試合中</option>
+                              <option value="completed">試合終了</option>
+                            </select>
+                          </label>
+                          <button type="button" onClick={() => void handleDeleteGame(game)} className="rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-700">
+                            試合を削除
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
+        )}
+
+        {page === 'game-detail' && (
+          <section className="rounded-2xl bg-white p-5 shadow-sm sm:p-6">
+            <button
+              type="button"
+              onClick={() => { setPage('games'); setMessage('') }}
+              className="mb-5 rounded-lg border border-slate-300 px-4 py-2 font-semibold text-slate-700"
+            >
+              ← 試合一覧に戻る
+            </button>
+            {!selectedGame || !homeTeam || !awayTeam ? (
+              <div>
+                <h2 className="text-xl font-bold">試合を表示できません</h2>
+                <p className="mt-2 text-slate-600">試合またはチームが見つかりません。試合一覧に戻ってください。</p>
+              </div>
+            ) : (
+              <>
+                <h2 className="text-2xl font-bold">{selectedGame.name}</h2>
+                <p className="mt-2 text-slate-600">
+                  {homeTeam.name} <span className="px-2 font-bold text-slate-400">VS</span> {awayTeam.name}
+                </p>
+                <p className="mt-2 text-sm text-slate-500">各チームのこのクォーターの出場選手を5人選択してください。</p>
+                <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+                  {([
+                    { side: 'home' as const, team: homeTeam, lineup: homeLineup, label: 'ホーム' },
+                    { side: 'away' as const, team: awayTeam, lineup: awayLineup, label: 'アウェイ' },
+                  ]).map(({ side, team, lineup, label }) => (
+                    <div key={side} className="rounded-xl border border-slate-200 p-4">
+                      <div className="mb-3 flex items-center justify-between gap-2">
+                        <h3 className="text-lg font-bold">{label}：{team.name}</h3>
+                        <span className={`rounded-full px-3 py-1 text-sm font-bold ${lineup.length === 5 ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-700'}`}>
+                          {lineup.length}/5人
+                        </span>
+                      </div>
+                      <p className="mb-3 text-sm text-slate-500">選手名を押して選択・解除できます。</p>
+                      <div className="max-h-[32rem] space-y-2 overflow-y-auto">
+                        {team.players.map((player) => {
+                          const checked = lineup.includes(player.id)
+                          const disabled = !checked && lineup.length >= 5
+                          return (
+                            <label
+                              key={player.id}
+                              className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 ${checked ? 'border-blue-600 bg-blue-50' : 'border-slate-200'} ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={disabled}
+                                onChange={() => toggleLineup(player.id, side)}
+                                className="h-5 w-5 accent-blue-700"
+                              />
+                              <span className="w-14 shrink-0 text-center font-bold">#{player.number}</span>
+                              <span className="min-w-0 flex-1">{player.name}</span>
+                              {checked && <span className="text-sm font-bold text-blue-700">先発</span>}
+                            </label>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => void handleSaveLineups()}
+                  className="mt-6 w-full rounded-xl bg-blue-700 px-6 py-4 font-bold text-white disabled:opacity-50"
+                >
+                  {saving ? '保存中...' : `${quarterLabel(lineupSetupQuarter)}の出場メンバーを保存して試合へ`}
+                </button>
+              </>
+            )}
+          </section>
+        )}
+
+        {page === 'game-record' && (
+          <section className="rounded-2xl bg-white p-2 shadow-sm sm:p-3">
+            {!selectedGame || !homeTeam || !awayTeam ? (
+              <div>
+                <h2 className="text-xl font-bold">試合を表示できません</h2>
+                <button type="button" onClick={() => setPage('games')} className="mt-4 rounded-lg border px-4 py-2">試合一覧に戻る</button>
+              </div>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-blue-700">試合記録</p>
+                    <h2 className="text-lg font-bold">{selectedGame.name}</h2>
+                <p className="mt-1 inline-flex rounded-md bg-blue-700 px-2 py-1 text-sm font-black text-white">{quarterLabel(lineupSetupQuarter)}</p>
+                    <p className="mt-0.5 text-sm text-slate-600">{homeTeam.name} vs {awayTeam.name}</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {selectedGame.status === 'completed' ? (
+                      <span className="rounded-full bg-slate-100 px-3 py-2 text-sm font-bold text-slate-700">試合終了</span>
+                    ) : (
+                      <button type="button" disabled={saving} onClick={() => void handleFinishGame()} className="rounded-lg bg-red-600 px-4 py-2 font-bold text-white disabled:opacity-50">試合終了</button>
+                    )}
+                    <button type="button" onClick={() => { setPage('games'); setMessage('') }} className="rounded-lg border border-slate-300 px-4 py-2 font-semibold">試合一覧に戻る</button>
+                  </div>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
+                  <button type="button" onClick={() => setRecordView('official')} className={`rounded-lg px-2 py-2 text-sm font-bold sm:text-base ${recordView === 'official' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>スタッツ入力</button>
+                  <button type="button" onClick={() => setRecordView('original')} className={`rounded-lg px-2 py-2 text-sm font-bold sm:text-base ${recordView === 'original' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>オリジナル表示</button>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center justify-between gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs">
+                  <label htmlFor="timeout-limit" className="font-semibold">設定：各クォーターのタイムアウト上限</label>
+                  <select id="timeout-limit" value={timeoutLimit} onChange={e => { const value = Number(e.target.value); setTimeoutLimit(value); localStorage.setItem('team-link-timeout-limit', String(value)); setMessage(`タイムアウト上限を各クォーター${value}回に設定しました。`) }} className="rounded border border-slate-300 bg-white px-2 py-1">
+                    <option value={1}>1回</option><option value={2}>2回</option><option value={3}>3回</option>
+                  </select>
+                </div>
+                {recordView === 'official' && (
+                  <div className="mt-1 grid grid-cols-2 gap-1">
+                    {[{team:homeTeam,label:'ホーム'},{team:awayTeam,label:'アウェイ'}].map(({team,label}) => {
+                      const used = selectedGame.events.filter(event => !event.cancelled && event.type === 'timeout' && event.teamId === team.id && event.quarter === selectedGame.currentQuarter).length
+                      const limitReached = used >= timeoutLimit
+                      return <div key={team.id} className="rounded-lg border border-slate-300 bg-white p-1">
+                        <div className="mb-1 text-xs font-semibold text-slate-600">{label} · {team.name}</div>
+                        <button type="button" disabled={selectedGame.status === 'completed' || limitReached} onClick={() => void handleTimeout(team.id)} className={`w-full rounded-md px-3 py-2 text-sm font-bold text-white disabled:cursor-not-allowed ${limitReached ? 'bg-slate-400' : 'bg-indigo-600 hover:bg-indigo-700'}`}>タイムアウト</button>
+                        <div className={`mt-1 text-right text-xs font-bold ${limitReached ? 'text-red-600' : 'text-slate-500'}`}>{limitReached ? '上限達成' : `使用 ${used}/${timeoutLimit}`}</div>
+                      </div>
+                    })}
+                  </div>
+                )}
+                {recordView === 'official' && (
+                  <>
+                <div className="sticky top-0 z-20 mt-2 grid grid-cols-3 items-center gap-1 rounded-xl bg-slate-900 p-2 text-center text-white shadow-md">
+                  <div><p className="truncate text-xs text-slate-300">{homeTeam.name}</p><p className="text-3xl font-black">{selectedGame.events.filter(e => !e.cancelled && e.teamId === homeTeam.id && (e.type === 'shot' || e.type === 'freeThrow') && e.made).reduce((sum, e) => sum + (e.points ?? 0), 0)}</p></div>
+                  <div><p className="text-xs font-bold text-slate-300">＜{quarterLabel(selectedGame.currentQuarter)}＞</p><p className="text-lg font-bold">SCORE</p>{selectedGame.status !== 'completed' && selectedGame.currentQuarter < 6 && <button type="button" onClick={() => void handleQuarterChange(selectedGame.currentQuarter + 1)} className="mt-2 rounded-lg bg-white px-2 py-1 text-sm font-bold text-slate-900">次のQへ →</button>}</div>
+                  <div><p className="truncate text-xs text-slate-300">{awayTeam.name}</p><p className="text-3xl font-black">{selectedGame.events.filter(e => !e.cancelled && e.teamId === awayTeam.id && (e.type === 'shot' || e.type === 'freeThrow') && e.made).reduce((sum, e) => sum + (e.points ?? 0), 0)}</p></div>
+                </div>
+                {selectedGame.status === 'completed' && <p className="mt-5 rounded-xl bg-slate-100 p-3 font-semibold text-slate-700">この試合は終了済みです。以下は保存された記録の閲覧専用です。</p>}
+                <p className="mt-2 text-xs font-bold">{selectedGame.status === 'completed' ? '選手・記録（閲覧のみ）' : '選手を選択して記録'}</p>
+                <div className="mt-1 grid grid-cols-1 items-start gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)_minmax(0,1fr)]">
+                  {[{team:homeTeam, side:'home' as const, label:'ホーム'}, {team:awayTeam, side:'away' as const, label:'アウェイ'}].map(({team,side,label}) => {
+                    const stored = (selectedGame as Game & { quarterLineups?: Record<number, { home: string[]; away: string[] }> }).quarterLineups ?? {}
+                    const lineup = stored[selectedGame.currentQuarter]?.[side] ?? (side === 'home' ? selectedGame.homeLineup ?? [] : selectedGame.awayLineup ?? [])
+                    const bench = team.players.filter(p => !lineup.includes(p.id))
+                    return (
+                    <div key={team.id} className={`min-w-0 rounded-lg border border-slate-200 p-1.5 ${side === 'home' ? 'order-1' : 'order-3'}`}>
+                      <h3 className="mb-1 truncate text-sm font-bold">{label}：{team.name}</h3>
+                      <div className="grid grid-cols-1 gap-1">
+                        {team.players.filter(player => lineup.includes(player.id)).map(player => (
+                          <button key={player.id} type="button" onClick={() => selectedGame.status !== 'completed' && setSelectedPlayerId(player.id)} disabled={selectedGame.status === 'completed'} className={`rounded-md border px-2 py-1.5 text-left text-sm ${selectedPlayerId === player.id ? 'border-blue-700 bg-blue-50 ring-2 ring-blue-200' : 'border-slate-200 bg-white'}`}>
+                            <span className="font-bold">#{player.number}</span> {player.name}{selectedPlayerId === player.id && <span className="ml-2 text-xs font-bold text-blue-700">選択中</span>}
+                          </button>
+                        ))}
+                      </div>
+                      {selectedGame.status !== 'completed' && <div className="mt-2 rounded-md bg-slate-50 p-1">
+                        <p className="mb-1 text-[11px] font-bold">選手交代</p>
+                        <div className="grid grid-cols-2 gap-1">
+                          <select aria-label={`${label}交代する選手`} value={subOutByTeam[team.id] ?? ''} onChange={e => setSubOutByTeam(current => ({...current, [team.id]: e.target.value}))} className="w-full min-w-0 rounded border border-slate-300 bg-white px-1 py-1 text-[10px]"><option value="">交代する選手</option>{team.players.filter(p => lineup.includes(p.id)).map(p => <option key={p.id} value={p.id}>#{p.number} {p.name}</option>)}</select>
+                          <select aria-label={`${label}入る選手`} value={subInByTeam[team.id] ?? ''} onChange={e => setSubInByTeam(current => ({...current, [team.id]: e.target.value}))} className="w-full min-w-0 rounded border border-slate-300 bg-white px-1 py-1 text-[10px]"><option value="">入る選手</option>{bench.map(p => <option key={p.id} value={p.id}>#{p.number} {p.name}</option>)}</select>
+                        </div>
+                        <button type="button" onClick={() => void handleSubstitution(team, subOutByTeam[team.id] ?? '', subInByTeam[team.id] ?? '')} className="mt-1 w-full rounded-md bg-amber-600 px-2 py-1 text-xs font-bold text-white">交代を記録</button>
+                      </div>}
+                    </div>
+                    )
+                  })}
+                {(() => {
+                  const player = [...homeTeam.players, ...awayTeam.players].find(p => p.id === selectedPlayerId)
+                  const team = homeTeam.players.some(p => p.id === selectedPlayerId) ? homeTeam : awayTeam
+                  return (
+                    <div className="order-2 min-w-0 rounded-lg border border-blue-200 bg-blue-50 p-2 lg:sticky lg:top-[5.5rem] lg:max-h-[calc(100dvh-6rem)] lg:overflow-y-auto">
+                      <p className="truncate text-sm font-bold">{player ? `${team.name}：#${player.number} ${player.name}` : '先に記録する選手を選んでください'}</p>
+                      <div className="mt-1 grid grid-cols-2 gap-1">
+                        <button type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, 'shot', 2, true)} className="rounded-lg bg-blue-700 px-1 py-2 text-sm font-black text-white disabled:opacity-40">2点成功</button>
+                        <button type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, 'shot', 3, true)} className="rounded-lg bg-blue-700 px-1 py-2 text-sm font-black text-white disabled:opacity-40">3点成功</button>
+                        <button type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, 'shot', 2, false)} className="rounded-lg border border-red-300 bg-red-50 px-1 py-2 text-sm font-black text-red-700 disabled:opacity-40">2点失敗</button>
+                        <button type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, 'shot', 3, false)} className="rounded-lg border border-red-300 bg-red-50 px-1 py-2 text-sm font-black text-red-700 disabled:opacity-40">3点失敗</button>
+                        {[{type:'foul' as const,label:'ファウル'},{type:'turnover' as const,label:'ターンオーバー'},{type:'assist' as const,label:'アシスト'}].slice(0, 1).map(item => <button key={item.type} type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, item.type)} className="rounded-md border border-slate-300 bg-white px-1 py-2 text-xs font-semibold disabled:opacity-40">{item.label}</button>)}
+                        <button type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => { setFreeThrowCount(2); setFreeThrowResults([null, null]); setFreeThrowModalOpen(true); setMessage('') }} className="rounded-md border border-emerald-300 bg-emerald-50 px-1 py-2 text-xs font-black text-emerald-800 disabled:opacity-40">フリースロー</button>
+                        {[{type:'turnover' as const,label:'ターンオーバー'},{type:'assist' as const,label:'アシスト'},{type:'steal' as const,label:'スティール'},{type:'block' as const,label:'ブロック'},{type:'offensiveRebound' as const,label:'OFリバウンド'},{type:'defensiveRebound' as const,label:'DFリバウンド'}].map(item => <button key={item.type} type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, item.type)} className="rounded-md border border-slate-300 bg-white px-1 py-2 text-xs font-semibold disabled:opacity-40">{item.label}</button>)}
+                      </div>
+                      {freeThrowModalOpen && (
+                        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="free-throw-title">
+                          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+                            <h3 id="free-throw-title" className="text-xl font-black">フリースロー記録</h3>
+                            <p className="mt-1 text-sm text-slate-600">{player ? `#${player.number} ${player.name}` : '選手未選択'} · {quarterLabel(selectedGame.currentQuarter)}</p>
+                            <div className="mt-4 grid grid-cols-3 gap-2">
+                              {([1, 2, 3] as const).map(count => <button key={count} type="button" onClick={() => { setFreeThrowCount(count); setFreeThrowResults(Array(count).fill(null)) }} className={`rounded-lg border px-3 py-3 font-bold ${freeThrowCount === count ? 'border-blue-700 bg-blue-700 text-white' : 'border-slate-300 bg-white'}`}>{count}本{freeThrowCount === count ? '（選択中）' : ''}</button>)}
+                            </div>
+                            <div className="mt-4 space-y-3">
+                              {Array.from({ length: freeThrowCount }, (_, index) => (
+                                <div key={index} className="flex items-center gap-3">
+                                  <span className="w-16 shrink-0 font-bold">{index + 1}本目</span>
+                                  <button type="button" onClick={() => setFreeThrowResults(current => current.map((value, i) => i === index ? true : value))} className={`flex-1 rounded-lg border px-3 py-3 font-bold ${freeThrowResults[index] === true ? 'border-emerald-700 bg-emerald-600 text-white' : 'border-emerald-300 bg-emerald-50 text-emerald-800'}`}>成功</button>
+                                  <button type="button" onClick={() => setFreeThrowResults(current => current.map((value, i) => i === index ? false : value))} className={`flex-1 rounded-lg border px-3 py-3 font-bold ${freeThrowResults[index] === false ? 'border-red-700 bg-red-600 text-white' : 'border-red-300 bg-red-50 text-red-700'}`}>失敗</button>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-5 flex justify-end gap-2">
+                              <button type="button" disabled={saving} onClick={() => setFreeThrowModalOpen(false)} className="rounded-lg border border-slate-300 px-4 py-2 font-bold">キャンセル</button>
+                              <button type="button" disabled={saving || freeThrowResults.slice(0, freeThrowCount).some(result => result === null)} onClick={() => void handleSaveFreeThrows()} className="rounded-lg bg-blue-700 px-5 py-2 font-bold text-white disabled:opacity-40">{saving ? '保存中…' : '保存'}</button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm text-slate-500">記録済み：{selectedGame.events.filter(e => !e.cancelled).length}件（自動保存）</p>
+                  <button type="button" disabled={selectedGame.status === 'completed'} onClick={() => void handleUndoLastEvent()} className="rounded-lg border border-red-200 px-4 py-2 font-semibold text-red-700 disabled:cursor-not-allowed disabled:opacity-40">直前の記録を取り消す</button>
+                </div>
+                <div className="mt-2 rounded-lg border border-slate-200 p-2">
+                  <h3 className="mb-1 text-sm font-bold">履歴</h3>
+                  {selectedGame.events.filter(e => !e.cancelled).slice().reverse().slice(0,5).map(event => {
+                    const eventTeam = event.teamId === homeTeam.id ? homeTeam : awayTeam
+                    const eventPlayer = [...homeTeam.players, ...awayTeam.players].find(p => p.id === event.playerId)
+                    const labels: Record<string,string> = {assist:'アシスト',block:'ブロック',steal:'スティール',offensiveRebound:'OFリバウンド',defensiveRebound:'DFリバウンド',turnover:'ターンオーバー',foul:'ファウル',substitution:'選手交代',timeout:'タイムアウト'}
+                    const recordLabel = event.type === 'shot'
+                      ? `${event.points ?? 0}点${event.made ? '成功' : '失敗'}`
+                      : event.type === 'freeThrow'
+                        ? `フリースロー${event.made ? '成功' : '失敗'}`
+                        : labels[event.type] ?? event.type
+                    return <div key={event.id} className="flex justify-between gap-3 border-b border-slate-100 py-2 text-sm last:border-0"><span>{quarterLabel(event.quarter)} · {eventTeam.name} · #{eventPlayer?.number ?? '?'} {eventPlayer?.name ?? '選手不明'}</span><strong>{recordLabel}</strong></div>
+                  })}
+                  {selectedGame.events.filter(e => !e.cancelled).length === 0 && <p className="text-sm text-slate-500">まだ記録はありません。</p>}
+                </div>
+
+                <section className="mt-2 rounded-lg border border-slate-200 bg-white p-2">
+                  <div className="mb-1">
+                    <h3 className="text-sm font-bold">クォーター別スコア</h3>
+                    <p className="text-xs text-slate-500">クォーターごとの得点</p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[520px] border-collapse text-sm">
+                      <thead>
+                        <tr className="bg-slate-100 text-left">
+                          <th className="border-b border-slate-200 px-2 py-1">チーム</th>
+                          {[1, 2, 3, 4, 5, 6].map(q => <th key={q} className="border-b border-slate-200 px-2 py-1 text-center">{q <= 4 ? `${q}Q` : q === 5 ? 'OT' : '2OT'}</th>)}
+                          <th className="border-b border-slate-200 px-2 py-1 text-center">合計</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[{ team: homeTeam, label: 'ホーム' }, { team: awayTeam, label: 'アウェイ' }].map(({ team, label }) => {
+                          const validScoringEvents = selectedGame.events.filter(event => !event.cancelled && event.teamId === team.id && (event.type === 'shot' || event.type === 'freeThrow') && event.made)
+                          const quarterScores = [1, 2, 3, 4, 5, 6].map(q => validScoringEvents.filter(event => event.quarter === q).reduce((sum, event) => sum + (event.points ?? (event.type === 'freeThrow' ? 1 : 0)), 0))
+                          const total = quarterScores.reduce((sum, value) => sum + value, 0)
+                          return <tr key={team.id} className="border-b border-slate-100 last:border-0"><td className="whitespace-nowrap px-2 py-1 font-semibold">{team.name} <span className="text-xs font-normal text-slate-500">({label})</span></td>{quarterScores.map((value, index) => <td key={index} className="px-2 py-1 text-center tabular-nums">{value}</td>)}<td className="px-2 py-1 text-center font-bold tabular-nums text-blue-700">{total}</td></tr>
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+                <section className="mt-2 rounded-lg border border-slate-200 bg-white p-2">
+                  <div className="mb-1">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-bold">ボックススコア</h3>
+                        <p className="text-xs text-slate-500">記録に応じて自動更新</p>
+                      </div>
+                      <button type="button" onClick={exportGameStatsCsv} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-50">CSVで出力</button>
+                    </div>
+                  </div>
+                  {[{ team: homeTeam, lineup: selectedGame.homeLineup ?? [] }, { team: awayTeam, lineup: selectedGame.awayLineup ?? [] }].map(({ team, lineup }) => (
+                    <div key={team.id} className="mb-2 last:mb-0">
+                      <h4 className="mb-1 text-sm font-bold">{team.name}</h4>
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[760px] border-collapse text-sm">
+                          <thead>
+                            <tr className="bg-slate-100 text-left">
+                              {['選手', '得点', 'AST', 'OFリバウンド', 'DFリバウンド', 'ST', 'BLK', 'TO', 'PF'].map(label => <th key={label} className="border-b border-slate-200 px-2 py-1 font-semibold">{label}</th>)}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {team.players.filter(player => lineup.includes(player.id)).map(player => {
+                              const playerEvents = selectedGame.events.filter(event => !event.cancelled && event.teamId === team.id && event.playerId === player.id)
+                              const count = (type: string) => playerEvents.filter(event => event.type === type).length
+                              const points = playerEvents.filter(event => (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + (event.points ?? (event.type === 'freeThrow' ? 1 : 0)), 0)
+                              const values = [points, count('assist'), count('offensiveRebound'), count('defensiveRebound'), count('steal'), count('block'), count('turnover'), count('foul')]
+                              return (
+                                <tr key={player.id} className="border-b border-slate-100 last:border-0">
+                                  <td className="whitespace-nowrap px-2 py-1 font-semibold">#{player.number} {player.name}</td>
+                                  {values.map((value, index) => <td key={index} className={`px-2 py-1 tabular-nums ${index === 0 ? 'font-bold text-blue-700' : ''}`}>{value}</td>)}
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                          <tfoot>
+                            <tr className="bg-slate-50 font-bold">
+                              <td className="px-2 py-1">チーム合計</td>
+                              {['shot','assist','offensiveRebound','defensiveRebound','steal','block','turnover','foul'].map((type, index) => {
+                                const teamEvents = selectedGame.events.filter(event => !event.cancelled && event.teamId === team.id)
+                                const total = index === 0
+                                  ? teamEvents.filter(event => (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + (event.points ?? (event.type === 'freeThrow' ? 1 : 0)), 0)
+                                  : teamEvents.filter(event => event.type === type).length
+                                return <td key={type} className="px-2 py-1 tabular-nums">{total}</td>
+                              })}
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                    </div>
+                  ))}
+                </section>
+              </>
+                )}
+                {recordView === 'original' && (() => {
+                  const activeEvents = selectedGame.events
+                    .filter(event => !event.cancelled)
+                    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+                  const scoringEvents = activeEvents.filter(event =>
+                    (event.type === 'shot' || event.type === 'freeThrow') && event.made &&
+                    (event.points ?? (event.type === 'freeThrow' ? 1 : 0)) > 0
+                  )
+                  const pointsOf = (event: typeof activeEvents[number]) => event.points ?? (event.type === 'freeThrow' ? 1 : 0)
+                  const scoreFor = (teamId: string) => scoringEvents.filter(event => event.teamId === teamId).reduce((sum, event) => sum + pointsOf(event), 0)
+                  const eventSymbol = (event: typeof activeEvents[number]) => {
+                    if (event.type === 'offensiveRebound') return 'O'
+                    if (event.type === 'defensiveRebound') return 'D'
+                    if (event.type === 'shot' && !event.made) return pointsOf(event) === 3 ? '〇' : '/'
+                    if (event.type === 'shot' && event.made) return pointsOf(event) === 3 ? '③' : '☓'
+                    if (event.type === 'freeThrow') {
+                      const attempts = (event as typeof event & { freeThrowAttempts?: number }).freeThrowAttempts ?? 1
+                      const successes = event.made ? Math.max(0, Math.min(attempts, pointsOf(event))) : 0
+                      if (attempts === 1) return successes === 1 ? '〼' : '☐'
+                      if (attempts === 2) {
+                        if (successes === 2) return '☒'
+                        if (successes === 1) return '〼'
+                        return '☐'
+                      }
+                      if (attempts === 3) {
+                        if (successes === 3) return '☒〼'
+                        if (successes === 2) return '☒'
+                        if (successes === 1) return '〼☐'
+                        return '☐☐'
+                      }
+                      return event.made ? '〼' : '☐'
+                    }
+                    if (event.type === 'timeout') return '〼'
+                    return ''
+                  }
+                  const teamLineups = [
+                    { team: homeTeam, lineup: selectedGame.homeLineup ?? [] },
+                    { team: awayTeam, lineup: selectedGame.awayLineup ?? [] },
+                  ]
+                  const appeared = (team: Team, lineup: string[]) => team.players.filter(player =>
+                    lineup.includes(player.id) || activeEvents.some(event => event.teamId === team.id && event.playerId === player.id)
+                  )
+                  const runningScorers = (team: Team) => {
+                    let total = 0
+                    const grid: Array<{ total: number; number: string } | null> = Array(100).fill(null)
+                    scoringEvents.filter(event => event.teamId === team.id).forEach(event => {
+                      total += pointsOf(event)
+                      const player = team.players.find(item => item.id === event.playerId)
+                      if (total >= 1 && total <= 100) grid[total - 1] = { total, number: player?.number ?? '?' }
+                    })
+                    return grid
+                  }
+                  return <section className="fixed inset-0 z-50 flex h-[100dvh] w-screen flex-col overflow-hidden bg-white p-1 !text-black [&_*]:!text-black sm:p-2">
+                    <div className="mb-1 flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 pb-1">
+                      <div className="min-w-0 flex-1 text-center">
+                        <div className="text-[9px] font-bold tracking-widest">TEAM LINK · ORIGINAL SCORE SHEET</div>
+                        <h3 className="truncate text-sm font-black">{selectedGame.name}</h3>
+                        <div className="flex items-center justify-center gap-3 text-xs font-bold"><span>{homeTeam.name} <b className="text-lg">{scoreFor(homeTeam.id)}</b></span><span>VS</span><span><b className="text-lg">{scoreFor(awayTeam.id)}</b> {awayTeam.name}</span></div>
+                      </div>
+                      <button type="button" onClick={() => setRecordView('official')} className="shrink-0 rounded border border-slate-400 px-2 py-1 text-xs font-bold">記録画面へ戻る</button>
+                    </div>
+                    <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-2 gap-1 overflow-hidden">
+                    {teamLineups.map(({team, lineup}) => {
+                      const players = appeared(team, lineup)
+                      const teamEvents = activeEvents.filter(event => event.teamId === team.id)
+                      const quarterScore = (q: number) => teamEvents.filter(event => event.quarter === q && (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + pointsOf(event), 0)
+                      const runners = runningScorers(team)
+                      return <div key={team.id} className="flex min-h-0 min-w-0 flex-col overflow-hidden border-b border-slate-500">
+                        <h4 className="shrink-0 border border-slate-700 bg-slate-200 px-1 py-0.5 text-xs font-black">{team.name}　合計 {scoreFor(team.id)} 点</h4>
+                        <div className="min-h-0 flex-1 overflow-hidden">
+                          <table className="w-full table-fixed border-collapse text-[10px] leading-tight">
+                            <thead>
+                              <tr className="bg-slate-100">
+                                <th rowSpan={2} className="w-[4%] border border-slate-500 px-0 py-0.5 text-center align-middle">No.</th>
+                                <th rowSpan={2} className="w-[8%] border border-slate-500 px-0 py-0.5 text-left align-middle">選手名</th>
+                                <th colSpan={6} className="border border-slate-500 px-0 py-0.5 text-center">出場時間</th>
+                                <th rowSpan={2} className="w-[8%] border border-slate-500 px-0 py-0.5 text-center align-middle">ファウル</th>
+                                {[1,2,3,4,5,6].map(q => <th key={q} rowSpan={2} className="w-[7.5%] border border-slate-500 px-0 py-0.5 text-center align-middle">{quarterLabel(q)}</th>)}
+                                <th rowSpan={2} className="w-[3%] border border-slate-500 px-0 py-0.5 text-center align-middle">O</th><th rowSpan={2} className="w-[3%] border border-slate-500 px-0 py-0.5 text-center align-middle">D</th><th rowSpan={2} className="w-[4%] border border-slate-500 px-0 py-0.5 text-center align-middle">前半</th><th rowSpan={2} className="w-[4%] border border-slate-500 px-0 py-0.5 text-center align-middle">後半</th><th rowSpan={2} className="w-[5%] border border-slate-500 px-0 py-0.5 text-center align-middle">合計</th>
+                              </tr>
+                              <tr className="bg-slate-100">{['1','2','3','4','OT','2OT'].map(q => <th key={q} className="w-[4%] border border-slate-500 px-0 py-0.5 text-center">{q}</th>)}</tr>
+                            </thead>
+                            <tbody>{players.map(player => {
+                              const pe = teamEvents.filter(event => event.playerId === player.id)
+                              const foulSymbols = pe.filter(event => event.type === 'foul').map(event => `P${(['₁','₂','₃','₄'][Math.min(event.quarter, 4) - 1] ?? '₄')}`)
+                              const qCells = [1,2,3,4,5,6].map(q => pe.filter(event => event.quarter === q && event.type !== 'foul').map(eventSymbol).filter(Boolean))
+                              const qPoints = [1,2,3,4,5,6].map(q => pe.filter(event => event.quarter === q && (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + pointsOf(event), 0))
+                              const firstHalf = qPoints[0] + qPoints[1]
+                              const secondHalf = qPoints[2] + qPoints[3] + qPoints[4] + qPoints[5]
+                              return <tr key={player.id}>
+                                <td className="border border-slate-400 px-0.5 py-[1px]">{player.number}</td><td className="truncate border border-slate-400 px-0.5 py-[1px] font-semibold">{player.name}</td>{[1,2,3,4,5,6].map(q => { const storedLineups = (selectedGame as Game & { quarterLineups?: Record<number, { home: string[]; away: string[] }> }).quarterLineups ?? {}; const qLineup = storedLineups[q]?.[team.id === selectedGame.homeTeamId ? 'home' : 'away'] ?? (q === 1 ? lineup : []); const wasSubbedIn = teamEvents.some(e => e.type === 'substitution' && e.quarter === q && e.playerId === player.id); const wasSubbedOut = teamEvents.some(e => e.type === 'substitution' && e.quarter === q && e.relatedPlayerId === player.id); const appearedInQuarter = teamEvents.some(e => e.quarter === q && (e.playerId === player.id || e.relatedPlayerId === player.id)); const active = wasSubbedIn || wasSubbedOut || appearedInQuarter || qLineup.includes(player.id); return <td key={q} className="w-[4%] border border-slate-400 px-0 py-[1px] text-center font-bold">{active ? '〼' : '☐'}</td> })}<td className="border border-slate-400 px-0 py-[1px] text-left align-top"><div className="flex min-h-[16px] flex-wrap content-start justify-start gap-0">{foulSymbols.length ? foulSymbols.map((symbol, j) => <span key={j} className="inline-block font-bold text-red-700">{symbol}</span>) : <span className="text-slate-300">·</span>}</div></td>
+                                {qCells.map((symbols, i) => <td key={i} className="border border-slate-400 px-0 py-[1px] text-left align-top"><div className="flex min-h-[16px] flex-wrap content-start justify-start gap-0">{symbols.length ? symbols.map((symbol, j) => <span key={j} className={`inline-block ${(['/', '〇', '☐', '☐☐', '〼☐'].includes(symbol)) ? 'font-bold text-red-700' : ''}`}>{symbol}</span>) : <span className="text-slate-300">·</span>}</div></td>)}
+                                <td className="border border-slate-400 px-0 py-[1px] text-center">{pe.filter(e => e.type === 'offensiveRebound').length || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center">{pe.filter(e => e.type === 'defensiveRebound').length || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center">{firstHalf || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center">{secondHalf || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center font-black">{qPoints.reduce((sum, n) => sum+n, 0)}</td>
+                              </tr>
+                            })}</tbody>
+                            <tfoot><tr className="bg-slate-100 font-black"><td colSpan={8} className="border border-slate-500 p-1">チーム合計</td>{[1,2,3,4,5,6].map(q=><td key={q} className="border border-slate-500 p-1 text-left">{quarterScore(q)}</td>)}<td colSpan={2} className="border border-slate-500 p-1 text-center">—</td><td className="border border-slate-500 p-1 text-center">{quarterScore(1)+quarterScore(2)}</td><td className="border border-slate-500 p-1 text-center">{quarterScore(3)+quarterScore(4)+quarterScore(5)+quarterScore(6)}</td><td className="border border-slate-500 p-1 text-center">{scoreFor(team.id)}</td></tr></tfoot>
+                          </table>
+                        </div>
+                        <div className="mt-1 shrink-0 grid grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)_minmax(0,6fr)] gap-0.5 items-start">
+                          <div className="min-w-0 self-start border border-slate-400 px-0.5 py-0.5">
+                            <div className="mb-0.5 text-center text-[8px] font-bold">タイムアウト</div>
+                            <div className="grid grid-cols-4 gap-x-0.5 text-center text-[8px] leading-tight">{[1,2,3,4].map(q => <div key={`to-label-${q}`} className="font-semibold">{q}Q</div>)}{[1,2,3,4].map(q => { const count = teamEvents.filter(e => e.quarter === q && e.type === 'timeout').length; return <div key={`to-${q}`} className="text-xs font-bold">{count ? '〼'.repeat(Math.min(timeoutLimit,count)) : '☐'}</div> })}</div>
+                          </div>
+                          <div className="min-w-0 self-start border border-slate-400 px-0.5 py-0.5">
+                            <div className="mb-0.5 text-center text-[8px] font-bold">チームファウル</div>
+                            <div className="grid grid-cols-4 gap-x-0.5 gap-y-1 text-center text-[8px] leading-tight">{[1,2,3,4].map(q => <div key={`f-label-${q}`} className="font-semibold">{q}Q</div>)}{[1,2,3,4].map(q => { const count = teamEvents.filter(e => e.quarter === q && e.type === 'foul').length; return <div key={`f-${q}`} className="whitespace-nowrap text-[10px] font-bold">{'☒'.repeat(Math.min(4,count))}{'☐'.repeat(Math.max(0,4-count))}</div> })}</div>
+                          </div>
+                          <div className="min-w-0 border border-slate-400 px-1 py-0.5">
+                            <div className="mb-0.5 flex justify-between gap-1 text-[8px] font-bold"><span className="truncate">ランニングスコア（得点時の背番号）</span><span>100点</span></div>
+                            <div className="grid gap-0" style={{ gridTemplateColumns: 'repeat(50, minmax(0, 1fr))' }}>{Array.from({length:100}, (_, i) => {
+                              const item = runners[i]
+                              return <div key={i} className="min-w-0 border border-slate-300 text-center leading-none"><div className="text-[6px] text-slate-500">{i+1}</div><div className="h-3 truncate text-[8px] font-bold">{item ? item.number : ''}</div></div>
+                            })}</div>
+                          </div>
+                        </div>
+                      </div>
+                    })}
+                    </div>
+                  </section>
+                })()}
+              </>
+            )}
+          </section>
+        )}
+
+        <footer className="mt-10 border-t border-slate-200 py-5 text-center text-sm text-slate-500">
+          TEAM LINK · バスケットボール管理
+        </footer>
+      </div>
+    </main>
+  )
+}
+
+export default App
