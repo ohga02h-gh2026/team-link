@@ -1,4 +1,4 @@
-﻿import { useEffect, useState, type ChangeEvent } from 'react'
+import { useEffect, useState, type ChangeEvent } from 'react'
 import {
   createDefaultPlayers,
   deleteGame,
@@ -37,6 +37,7 @@ function App() {
   const [subInByTeam, setSubInByTeam] = useState<Record<string, string>>({})
   const [selectedPlayerId, setSelectedPlayerId] = useState<string>('')
   const [recordView, setRecordView] = useState<RecordView>('official')
+  const [historyModalOpen, setHistoryModalOpen] = useState(false)
   const [freeThrowModalOpen, setFreeThrowModalOpen] = useState(false)
   const [freeThrowCount, setFreeThrowCount] = useState<1 | 2 | 3>(2)
   const [freeThrowResults, setFreeThrowResults] = useState<Array<boolean | null>>([null, null])
@@ -518,6 +519,22 @@ function App() {
     }
   }
 
+  async function handleDeleteEvent(eventId: string) {
+    const game = games.find((item) => item.id === selectedGameId)
+    if (!game || game.status === 'completed') return
+    const target = game.events.find(event => event.id === eventId && !event.cancelled)
+    if (!target) return
+    if (!window.confirm('この記録を削除しますか？得点・スタッツも再計算されます。')) return
+    try {
+      await saveGame({ ...game, events: game.events.map(event => event.id === eventId ? { ...event, cancelled: true } : event), updatedAt: new Date().toISOString() })
+      await refreshData()
+      setMessage('選択した記録を削除しました。')
+    } catch (error) {
+      console.error(error)
+      setMessage('記録を削除できませんでした。')
+    }
+  }
+
   async function handleExportBackup() {
     try {
       const [savedTeams, savedGames] = await Promise.all([getTeams(), getGames()])
@@ -952,24 +969,13 @@ function App() {
                   </select>
                 </div>
                 {recordView === 'official' && (
-                  <div className="mt-1 grid grid-cols-2 gap-1">
-                    {[{team:homeTeam,label:'ホーム'},{team:awayTeam,label:'アウェイ'}].map(({team,label}) => {
-                      const used = selectedGame.events.filter(event => !event.cancelled && event.type === 'timeout' && event.teamId === team.id && event.quarter === selectedGame.currentQuarter).length
-                      const limitReached = used >= timeoutLimit
-                      return <div key={team.id} className="rounded-lg border border-slate-300 bg-white p-1">
-                        <div className="mb-1 text-xs font-semibold text-slate-600">{label} · {team.name}</div>
-                        <button type="button" disabled={selectedGame.status === 'completed' || limitReached} onClick={() => void handleTimeout(team.id)} className={`w-full rounded-md px-3 py-2 text-sm font-bold text-white disabled:cursor-not-allowed ${limitReached ? 'bg-slate-400' : 'bg-indigo-600 hover:bg-indigo-700'}`}>タイムアウト</button>
-                        <div className={`mt-1 text-right text-xs font-bold ${limitReached ? 'text-red-600' : 'text-slate-500'}`}>{limitReached ? '上限達成' : `使用 ${used}/${timeoutLimit}`}</div>
-                      </div>
-                    })}
-                  </div>
-                )}
-                {recordView === 'official' && (
                   <>
-                <div className="sticky top-0 z-20 mt-2 grid grid-cols-3 items-center gap-1 rounded-xl bg-slate-900 p-2 text-center text-white shadow-md">
-                  <div><p className="truncate text-xs text-slate-300">{homeTeam.name}</p><p className="text-3xl font-black">{selectedGame.events.filter(e => !e.cancelled && e.teamId === homeTeam.id && (e.type === 'shot' || e.type === 'freeThrow') && e.made).reduce((sum, e) => sum + (e.points ?? 0), 0)}</p></div>
-                  <div><p className="text-xs font-bold text-slate-300">＜{quarterLabel(selectedGame.currentQuarter)}＞</p><p className="text-lg font-bold">SCORE</p>{selectedGame.status !== 'completed' && selectedGame.currentQuarter < 6 && <button type="button" onClick={() => void handleQuarterChange(selectedGame.currentQuarter + 1)} className="mt-2 rounded-lg bg-white px-2 py-1 text-sm font-bold text-slate-900">次のQへ →</button>}</div>
-                  <div><p className="truncate text-xs text-slate-300">{awayTeam.name}</p><p className="text-3xl font-black">{selectedGame.events.filter(e => !e.cancelled && e.teamId === awayTeam.id && (e.type === 'shot' || e.type === 'freeThrow') && e.made).reduce((sum, e) => sum + (e.points ?? 0), 0)}</p></div>
+                <div className="sticky top-0 z-20 mt-2 grid grid-cols-[auto_minmax(0,1fr)_auto_minmax(0,1fr)_auto] items-center gap-1 rounded-xl bg-slate-900 p-1.5 text-center text-white shadow-md">
+                  <button type="button" disabled={selectedGame.status === 'completed' || selectedGame.events.filter(e => !e.cancelled && e.type === 'timeout' && e.teamId === homeTeam.id && e.quarter === selectedGame.currentQuarter).length >= timeoutLimit} onClick={() => void handleTimeout(homeTeam.id)} className="rounded-lg bg-indigo-600 px-2 py-3 text-xs font-black active:translate-y-0.5 active:bg-indigo-800 disabled:bg-slate-600">TO<br/>HOME</button>
+                  <div className="min-w-0"><p className="truncate text-xs text-slate-300">{homeTeam.name}</p><p className="text-3xl font-black">{selectedGame.events.filter(e => !e.cancelled && e.teamId === homeTeam.id && (e.type === 'shot' || e.type === 'freeThrow') && e.made).reduce((sum, e) => sum + (e.points ?? 0), 0)}</p><p className="text-[10px] text-slate-300">TO {selectedGame.events.filter(e => !e.cancelled && e.type === 'timeout' && e.teamId === homeTeam.id && e.quarter === selectedGame.currentQuarter).length}/{timeoutLimit}</p></div>
+                  <div><p className="text-xs font-bold text-slate-300">＜{quarterLabel(selectedGame.currentQuarter)}＞</p>{selectedGame.status !== 'completed' && selectedGame.currentQuarter < 6 && <button type="button" onClick={() => void handleQuarterChange(selectedGame.currentQuarter + 1)} className="mt-0.5 rounded-md bg-white px-2 py-1 text-[11px] font-black text-slate-900">次のQ⇒</button>}</div>
+                  <div className="min-w-0"><p className="truncate text-xs text-slate-300">{awayTeam.name}</p><p className="text-3xl font-black">{selectedGame.events.filter(e => !e.cancelled && e.teamId === awayTeam.id && (e.type === 'shot' || e.type === 'freeThrow') && e.made).reduce((sum, e) => sum + (e.points ?? 0), 0)}</p><p className="text-[10px] text-slate-300">TO {selectedGame.events.filter(e => !e.cancelled && e.type === 'timeout' && e.teamId === awayTeam.id && e.quarter === selectedGame.currentQuarter).length}/{timeoutLimit}</p></div>
+                  <button type="button" disabled={selectedGame.status === 'completed' || selectedGame.events.filter(e => !e.cancelled && e.type === 'timeout' && e.teamId === awayTeam.id && e.quarter === selectedGame.currentQuarter).length >= timeoutLimit} onClick={() => void handleTimeout(awayTeam.id)} className="rounded-lg bg-indigo-600 px-2 py-3 text-xs font-black active:translate-y-0.5 active:bg-indigo-800 disabled:bg-slate-600">TO<br/>AWAY</button>
                 </div>
                 {selectedGame.status === 'completed' && <p className="mt-5 rounded-xl bg-slate-100 p-3 font-semibold text-slate-700">この試合は終了済みです。以下は保存された記録の閲覧専用です。</p>}
                 <p className="mt-2 text-xs font-bold">{selectedGame.status === 'completed' ? '選手・記録（閲覧のみ）' : '選手を選択して記録'}</p>
@@ -983,18 +989,18 @@ function App() {
                       <h3 className="mb-1 truncate text-sm font-bold">{label}：{team.name}</h3>
                       <div className="grid grid-cols-1 gap-1">
                         {team.players.filter(player => lineup.includes(player.id)).map(player => (
-                          <button key={player.id} type="button" onClick={() => selectedGame.status !== 'completed' && setSelectedPlayerId(player.id)} disabled={selectedGame.status === 'completed'} className={`rounded-md border px-2 py-1.5 text-left text-sm ${selectedPlayerId === player.id ? 'border-blue-700 bg-blue-50 ring-2 ring-blue-200' : 'border-slate-200 bg-white'}`}>
+                          <button key={player.id} type="button" onClick={() => selectedGame.status !== 'completed' && setSelectedPlayerId(player.id)} disabled={selectedGame.status === 'completed'} className={`rounded-lg border-2 px-3 py-3.5 text-left text-lg font-bold ${selectedPlayerId === player.id ? 'border-blue-700 bg-blue-50 ring-2 ring-blue-200' : 'border-slate-200 bg-white'}`}>
                             <span className="font-bold">#{player.number}</span> {player.name}{selectedPlayerId === player.id && <span className="ml-2 text-xs font-bold text-blue-700">選択中</span>}
                           </button>
                         ))}
                       </div>
                       {selectedGame.status !== 'completed' && <div className="mt-2 rounded-md bg-slate-50 p-1">
-                        <p className="mb-1 text-[11px] font-bold">選手交代</p>
+                        <p className="mb-1 text-sm font-black">選手交代</p>
                         <div className="grid grid-cols-2 gap-1">
-                          <select aria-label={`${label}交代する選手`} value={subOutByTeam[team.id] ?? ''} onChange={e => setSubOutByTeam(current => ({...current, [team.id]: e.target.value}))} className="w-full min-w-0 rounded border border-slate-300 bg-white px-1 py-1 text-[10px]"><option value="">交代する選手</option>{team.players.filter(p => lineup.includes(p.id)).map(p => <option key={p.id} value={p.id}>#{p.number} {p.name}</option>)}</select>
-                          <select aria-label={`${label}入る選手`} value={subInByTeam[team.id] ?? ''} onChange={e => setSubInByTeam(current => ({...current, [team.id]: e.target.value}))} className="w-full min-w-0 rounded border border-slate-300 bg-white px-1 py-1 text-[10px]"><option value="">入る選手</option>{bench.map(p => <option key={p.id} value={p.id}>#{p.number} {p.name}</option>)}</select>
+                          <select aria-label={`${label}交代する選手`} value={subOutByTeam[team.id] ?? ''} onChange={e => setSubOutByTeam(current => ({...current, [team.id]: e.target.value}))} className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 py-3 text-base font-semibold"><option value="">交代する選手</option>{team.players.filter(p => lineup.includes(p.id)).map(p => <option key={p.id} value={p.id}>#{p.number} {p.name}</option>)}</select>
+                          <select aria-label={`${label}入る選手`} value={subInByTeam[team.id] ?? ''} onChange={e => setSubInByTeam(current => ({...current, [team.id]: e.target.value}))} className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 py-3 text-base font-semibold"><option value="">入る選手</option>{bench.map(p => <option key={p.id} value={p.id}>#{p.number} {p.name}</option>)}</select>
                         </div>
-                        <button type="button" onClick={() => void handleSubstitution(team, subOutByTeam[team.id] ?? '', subInByTeam[team.id] ?? '')} className="mt-1 w-full rounded-md bg-amber-600 px-2 py-1 text-xs font-bold text-white">交代を記録</button>
+                        <button type="button" onClick={() => void handleSubstitution(team, subOutByTeam[team.id] ?? '', subInByTeam[team.id] ?? '')} className="mt-1 w-full rounded-lg bg-amber-600 px-3 py-3.5 text-lg font-black text-white shadow active:translate-y-0.5">交代を記録</button>
                       </div>}
                     </div>
                     )
@@ -1006,13 +1012,16 @@ function App() {
                     <div className="order-2 min-w-0 rounded-lg border border-blue-200 bg-blue-50 p-2 lg:sticky lg:top-[5.5rem] lg:max-h-[calc(100dvh-6rem)] lg:overflow-y-auto">
                       <p className="truncate text-sm font-bold">{player ? `${team.name}：#${player.number} ${player.name}` : '先に記録する選手を選んでください'}</p>
                       <div className="mt-1 grid grid-cols-2 gap-1">
-                        <button type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, 'shot', 2, true)} className="rounded-lg bg-blue-700 px-1 py-2 text-sm font-black text-white disabled:opacity-40">2点成功</button>
-                        <button type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, 'shot', 3, true)} className="rounded-lg bg-blue-700 px-1 py-2 text-sm font-black text-white disabled:opacity-40">3点成功</button>
-                        <button type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, 'shot', 2, false)} className="rounded-lg border border-red-300 bg-red-50 px-1 py-2 text-sm font-black text-red-700 disabled:opacity-40">2点失敗</button>
-                        <button type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, 'shot', 3, false)} className="rounded-lg border border-red-300 bg-red-50 px-1 py-2 text-sm font-black text-red-700 disabled:opacity-40">3点失敗</button>
-                        {[{type:'foul' as const,label:'ファウル'},{type:'turnover' as const,label:'ターンオーバー'},{type:'assist' as const,label:'アシスト'}].slice(0, 1).map(item => <button key={item.type} type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, item.type)} className="rounded-md border border-slate-300 bg-white px-1 py-2 text-xs font-semibold disabled:opacity-40">{item.label}</button>)}
-                        <button type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => { setFreeThrowCount(2); setFreeThrowResults([null, null]); setFreeThrowModalOpen(true); setMessage('') }} className="rounded-md border border-emerald-300 bg-emerald-50 px-1 py-2 text-xs font-black text-emerald-800 disabled:opacity-40">フリースロー</button>
-                        {[{type:'turnover' as const,label:'ターンオーバー'},{type:'assist' as const,label:'アシスト'},{type:'steal' as const,label:'スティール'},{type:'block' as const,label:'ブロック'},{type:'offensiveRebound' as const,label:'OFリバウンド'},{type:'defensiveRebound' as const,label:'DFリバウンド'}].map(item => <button key={item.type} type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, item.type)} className="rounded-md border border-slate-300 bg-white px-1 py-2 text-xs font-semibold disabled:opacity-40">{item.label}</button>)}
+                        <button type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, 'shot', 2, true)} className="rounded-lg bg-blue-700 px-2 py-4 text-lg font-black text-white shadow-md transition active:translate-y-0.5 active:scale-[0.98] active:bg-blue-900 disabled:opacity-40">2点成功</button>
+                        <button type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, 'shot', 3, true)} className="rounded-lg bg-blue-700 px-2 py-4 text-lg font-black text-white shadow-md transition active:translate-y-0.5 active:scale-[0.98] active:bg-blue-900 disabled:opacity-40">3点成功</button>
+                        <button type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, 'shot', 2, false)} className="rounded-lg border-2 border-red-300 bg-red-50 px-2 py-4 text-lg font-black text-red-700 shadow-md transition active:translate-y-0.5 active:scale-[0.98] active:bg-red-200 disabled:opacity-40">2点失敗</button>
+                        <button type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, 'shot', 3, false)} className="rounded-lg border-2 border-red-300 bg-red-50 px-2 py-4 text-lg font-black text-red-700 shadow-md transition active:translate-y-0.5 active:scale-[0.98] active:bg-red-200 disabled:opacity-40">3点失敗</button>
+                        {[{type:'foul' as const,label:'ファウル'},{type:'turnover' as const,label:'ターンオーバー'},{type:'assist' as const,label:'アシスト'}].slice(0, 1).map(item => <button key={item.type} type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, item.type)} className="rounded-lg border border-slate-300 bg-white px-2 py-3.5 text-base font-black shadow-sm transition active:translate-y-0.5 active:bg-slate-200 disabled:opacity-40">{item.label}</button>)}
+                        <button type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => { setFreeThrowCount(2); setFreeThrowResults([null, null]); setFreeThrowModalOpen(true); setMessage('') }} className="rounded-lg border-2 border-emerald-300 bg-emerald-50 px-2 py-3 text-base font-black text-emerald-800 shadow-sm active:translate-y-0.5 active:bg-emerald-100 disabled:opacity-40">フリースロー</button>
+                        {[{type:'turnover' as const,label:'ターンオーバー'},{type:'assist' as const,label:'アシスト'},{type:'steal' as const,label:'スティール'},{type:'block' as const,label:'ブロック'},{type:'offensiveRebound' as const,label:'OFリバウンド'},{type:'defensiveRebound' as const,label:'DFリバウンド'}].map(item => <button key={item.type} type="button" disabled={!player || selectedGame.status === 'completed'} onClick={() => player && void handleRecordEvent(team.id, player.id, item.type)} className="rounded-lg border border-slate-300 bg-white px-2 py-3.5 text-base font-black shadow-sm transition active:translate-y-0.5 active:bg-slate-200 disabled:opacity-40">{item.label}</button>)}
+                      </div>
+                      <div className="mt-1 rounded-md border border-blue-200 bg-blue-50 px-2 py-1">
+                        {(() => { const event = [...selectedGame.events].reverse().find(e => !e.cancelled); if (!event) return <p className="text-sm font-bold text-slate-600">今の操作：記録なし</p>; const eventTeam = event.teamId === homeTeam.id ? homeTeam : awayTeam; const eventPlayer = [...homeTeam.players, ...awayTeam.players].find(p => p.id === event.playerId); const labels: Record<string,string> = {assist:'アシスト',block:'ブロック',steal:'スティール',offensiveRebound:'OFリバウンド',defensiveRebound:'DFリバウンド',turnover:'ターンオーバー',foul:'ファウル',substitution:'選手交代',timeout:'タイムアウト'}; const label = event.type === 'shot' ? `${event.points ?? 0}点${event.made ? '成功' : '失敗'}` : event.type === 'freeThrow' ? `フリースロー${event.made ? '成功' : '失敗'}` : labels[event.type] ?? event.type; return <p className="truncate text-sm font-black text-blue-900">今の操作：{eventTeam.name} · {eventPlayer ? `#${eventPlayer.number} ${eventPlayer.name}` : 'チーム記録'} · {label}</p> })()}
                       </div>
                       {freeThrowModalOpen && (
                         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="free-throw-title">
@@ -1047,8 +1056,8 @@ function App() {
                   <button type="button" disabled={selectedGame.status === 'completed'} onClick={() => void handleUndoLastEvent()} className="rounded-lg border border-red-200 px-4 py-2 font-semibold text-red-700 disabled:cursor-not-allowed disabled:opacity-40">直前の記録を取り消す</button>
                 </div>
                 <div className="mt-2 rounded-lg border border-slate-200 p-2">
-                  <h3 className="mb-1 text-sm font-bold">履歴</h3>
-                  {selectedGame.events.filter(e => !e.cancelled).slice().reverse().slice(0,5).map(event => {
+                  <div className="mb-1 flex items-center justify-between gap-2"><h3 className="text-xs font-bold">直近3件</h3><button type="button" onClick={() => setHistoryModalOpen(true)} className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-bold active:bg-slate-100">履歴一覧・削除</button></div>
+                  {selectedGame.events.filter(e => !e.cancelled).slice().reverse().slice(0,3).map(event => {
                     const eventTeam = event.teamId === homeTeam.id ? homeTeam : awayTeam
                     const eventPlayer = [...homeTeam.players, ...awayTeam.players].find(p => p.id === event.playerId)
                     const labels: Record<string,string> = {assist:'アシスト',block:'ブロック',steal:'スティール',offensiveRebound:'OFリバウンド',defensiveRebound:'DFリバウンド',turnover:'ターンオーバー',foul:'ファウル',substitution:'選手交代',timeout:'タイムアウト'}
@@ -1057,11 +1066,29 @@ function App() {
                       : event.type === 'freeThrow'
                         ? `フリースロー${event.made ? '成功' : '失敗'}`
                         : labels[event.type] ?? event.type
-                    return <div key={event.id} className="flex justify-between gap-3 border-b border-slate-100 py-2 text-sm last:border-0"><span>{quarterLabel(event.quarter)} · {eventTeam.name} · #{eventPlayer?.number ?? '?'} {eventPlayer?.name ?? '選手不明'}</span><strong>{recordLabel}</strong></div>
+                    return <div key={event.id} className="flex items-center justify-between gap-1 border-b border-slate-100 py-1 text-xs last:border-0"><span className="min-w-0 flex-1">{quarterLabel(event.quarter)} · {eventTeam.name} · #{eventPlayer?.number ?? '?'} {eventPlayer?.name ?? (event.type === 'timeout' ? 'チーム記録' : '選手不明')} <strong className="ml-1">{recordLabel}</strong></span></div>
                   })}
                   {selectedGame.events.filter(e => !e.cancelled).length === 0 && <p className="text-sm text-slate-500">まだ記録はありません。</p>}
                 </div>
 
+                {historyModalOpen && (
+                  <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-3" role="dialog" aria-modal="true" aria-labelledby="history-title">
+                    <div className="flex max-h-[85dvh] w-full max-w-2xl flex-col rounded-xl bg-white p-3 shadow-2xl">
+                      <div className="mb-2 flex items-center justify-between gap-2"><h3 id="history-title" className="text-lg font-black">履歴一覧</h3><button type="button" onClick={() => setHistoryModalOpen(false)} className="rounded-lg border px-3 py-2 text-sm font-bold">閉じる</button></div>
+                      <p className="mb-2 text-xs text-slate-500">記録を1件ずつ削除できます。削除した記録は得点・スタッツから除外され、自動で再計算されます。</p>
+                      <div className="min-h-0 flex-1 overflow-y-auto">
+                        {selectedGame.events.filter(e => !e.cancelled).slice().reverse().map(event => {
+                          const eventTeam = event.teamId === homeTeam.id ? homeTeam : awayTeam
+                          const eventPlayer = [...homeTeam.players, ...awayTeam.players].find(p => p.id === event.playerId)
+                          const labels: Record<string,string> = {assist:'アシスト',block:'ブロック',steal:'スティール',offensiveRebound:'OFリバウンド',defensiveRebound:'DFリバウンド',turnover:'ターンオーバー',foul:'ファウル',substitution:'選手交代',timeout:'タイムアウト'}
+                          const recordLabel = event.type === 'shot' ? `${event.points ?? 0}点${event.made ? '成功' : '失敗'}` : event.type === 'freeThrow' ? `フリースロー${event.made ? '成功' : '失敗'}` : labels[event.type] ?? event.type
+                          return <div key={event.id} className="flex items-center gap-2 border-b border-slate-100 py-2 text-sm last:border-0"><span className="min-w-0 flex-1">{quarterLabel(event.quarter)} · {eventTeam.name} · #{eventPlayer?.number ?? '?'} {eventPlayer?.name ?? (event.type === 'timeout' ? 'チーム記録' : '選手不明')} <strong>{recordLabel}</strong></span><button type="button" disabled={selectedGame.status === 'completed'} onClick={() => void handleDeleteEvent(event.id)} className="shrink-0 rounded-lg border border-red-200 px-3 py-2 text-xs font-black text-red-700 active:bg-red-100 disabled:opacity-40">削除</button></div>
+                        })}
+                        {selectedGame.events.every(e => e.cancelled) && <p className="py-6 text-center text-sm text-slate-500">履歴はありません。</p>}
+                      </div>
+                    </div>
+                  </div>
+                )}
                 <section className="mt-2 rounded-lg border border-slate-200 bg-white p-2">
                   <div className="mb-1">
                     <h3 className="text-sm font-bold">クォーター別スコア</h3>
@@ -1098,22 +1125,31 @@ function App() {
                       <button type="button" onClick={exportGameStatsCsv} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-50">CSVで出力</button>
                     </div>
                   </div>
-                  {[{ team: homeTeam, lineup: selectedGame.homeLineup ?? [] }, { team: awayTeam, lineup: selectedGame.awayLineup ?? [] }].map(({ team, lineup }) => (
+                  {[{ team: homeTeam, lineup: selectedGame.homeLineup ?? [] }, { team: awayTeam, lineup: selectedGame.awayLineup ?? [] }].map(({ team }) => (
                     <div key={team.id} className="mb-2 last:mb-0">
                       <h4 className="mb-1 text-sm font-bold">{team.name}</h4>
                       <div className="overflow-x-auto">
-                        <table className="w-full min-w-[760px] border-collapse text-sm">
+                        <table className="w-full min-w-[820px] border-collapse text-xs">
                           <thead>
                             <tr className="bg-slate-100 text-left">
-                              {['選手', '得点', 'AST', 'OFリバウンド', 'DFリバウンド', 'ST', 'BLK', 'TO', 'PF'].map(label => <th key={label} className="border-b border-slate-200 px-2 py-1 font-semibold">{label}</th>)}
+                              {['選手', '得点', 'FG', 'FG%', '3FG', '3FG%', 'OREB', 'DREB', 'STL', 'BLK', 'AST', 'TO', 'PF'].map(label => <th key={label} className="whitespace-nowrap border-b border-slate-200 px-1.5 py-1 font-semibold">{label}</th>)}
                             </tr>
                           </thead>
                           <tbody>
-                            {team.players.filter(player => lineup.includes(player.id)).map(player => {
+                            {team.players.filter(player => {
+                              const initialLineup = team.id === selectedGame.homeTeamId ? (selectedGame.homeLineup ?? []) : (selectedGame.awayLineup ?? [])
+                              const hasPlayedEvent = selectedGame.events.some(event => !event.cancelled && event.teamId === team.id && (event.playerId === player.id || event.relatedPlayerId === player.id))
+                              return initialLineup.includes(player.id) || hasPlayedEvent
+                            }).map(player => {
                               const playerEvents = selectedGame.events.filter(event => !event.cancelled && event.teamId === team.id && event.playerId === player.id)
                               const count = (type: string) => playerEvents.filter(event => event.type === type).length
                               const points = playerEvents.filter(event => (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + (event.points ?? (event.type === 'freeThrow' ? 1 : 0)), 0)
-                              const values = [points, count('assist'), count('offensiveRebound'), count('defensiveRebound'), count('steal'), count('block'), count('turnover'), count('foul')]
+                              const shots = playerEvents.filter(event => event.type === 'shot')
+                              const madeShots = shots.filter(event => event.made).length
+                              const threes = shots.filter(event => event.points === 3)
+                              const madeThrees = threes.filter(event => event.made).length
+                              const pct = (made: number, attempts: number) => attempts ? `${Math.round(made / attempts * 100)}%` : '0%'
+                              const values: (string | number)[] = [points, `${madeShots}/${shots.length}`, pct(madeShots, shots.length), `${madeThrees}/${threes.length}`, pct(madeThrees, threes.length), count('offensiveRebound'), count('defensiveRebound'), count('steal'), count('block'), count('assist'), count('turnover'), count('foul')]
                               return (
                                 <tr key={player.id} className="border-b border-slate-100 last:border-0">
                                   <td className="whitespace-nowrap px-2 py-1 font-semibold">#{player.number} {player.name}</td>
@@ -1125,13 +1161,17 @@ function App() {
                           <tfoot>
                             <tr className="bg-slate-50 font-bold">
                               <td className="px-2 py-1">チーム合計</td>
-                              {['shot','assist','offensiveRebound','defensiveRebound','steal','block','turnover','foul'].map((type, index) => {
-                                const teamEvents = selectedGame.events.filter(event => !event.cancelled && event.teamId === team.id)
-                                const total = index === 0
-                                  ? teamEvents.filter(event => (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + (event.points ?? (event.type === 'freeThrow' ? 1 : 0)), 0)
-                                  : teamEvents.filter(event => event.type === type).length
-                                return <td key={type} className="px-2 py-1 tabular-nums">{total}</td>
-                              })}
+                              {(() => {
+                                const ev = selectedGame.events.filter(event => !event.cancelled && event.teamId === team.id)
+                                const shots = ev.filter(event => event.type === 'shot')
+                                const made = shots.filter(event => event.made).length
+                                const threes = shots.filter(event => event.points === 3)
+                                const madeThrees = threes.filter(event => event.made).length
+                                const points = ev.filter(event => (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + (event.points ?? (event.type === 'freeThrow' ? 1 : 0)), 0)
+                                const pct = (m: number, a: number) => a ? `${Math.round(m / a * 100)}%` : '0%'
+                                const totals: (string | number)[] = [points, `${made}/${shots.length}`, pct(made, shots.length), `${madeThrees}/${threes.length}`, pct(madeThrees, threes.length), ...['offensiveRebound','defensiveRebound','steal','block','assist','turnover','foul'].map(type => ev.filter(event => event.type === type).length)]
+                                return totals.map((value, index) => <td key={index} className="whitespace-nowrap px-2 py-1 tabular-nums">{value}</td>)
+                              })()}
                             </tr>
                           </tfoot>
                         </table>
@@ -1211,17 +1251,17 @@ function App() {
                       return <div key={team.id} className="flex min-h-0 min-w-0 flex-col overflow-hidden border-b border-slate-500">
                         <h4 className="shrink-0 border border-slate-700 bg-slate-200 px-1 py-0.5 text-xs font-black">{team.name}　合計 {scoreFor(team.id)} 点</h4>
                         <div className="min-h-0 flex-1 overflow-hidden">
-                          <table className="w-full table-fixed border-collapse text-[10px] leading-tight">
+                          <table className="w-full table-fixed border-collapse text-[10px] leading-tight" style={{ tableLayout: 'fixed', borderSpacing: 0 }}>
                             <thead>
                               <tr className="bg-slate-100">
                                 <th rowSpan={2} className="w-[4%] border border-slate-500 px-0 py-0.5 text-center align-middle">No.</th>
                                 <th rowSpan={2} className="w-[8%] border border-slate-500 px-0 py-0.5 text-left align-middle">選手名</th>
                                 <th colSpan={6} className="border border-slate-500 px-0 py-0.5 text-center">出場時間</th>
                                 <th rowSpan={2} className="w-[8%] border border-slate-500 px-0 py-0.5 text-center align-middle">ファウル</th>
-                                {[1,2,3,4,5,6].map(q => <th key={q} rowSpan={2} className="w-[7.5%] border border-slate-500 px-0 py-0.5 text-center align-middle">{quarterLabel(q)}</th>)}
-                                <th rowSpan={2} className="w-[3%] border border-slate-500 px-0 py-0.5 text-center align-middle">O</th><th rowSpan={2} className="w-[3%] border border-slate-500 px-0 py-0.5 text-center align-middle">D</th><th rowSpan={2} className="w-[4%] border border-slate-500 px-0 py-0.5 text-center align-middle">前半</th><th rowSpan={2} className="w-[4%] border border-slate-500 px-0 py-0.5 text-center align-middle">後半</th><th rowSpan={2} className="w-[5%] border border-slate-500 px-0 py-0.5 text-center align-middle">合計</th>
+                                {[1,2,3,4,5,6].map(q => <th key={q} rowSpan={2} className="w-[5%] border border-slate-500 px-0 py-0.5 text-center align-middle">{quarterLabel(q)}</th>)}
+                                <th rowSpan={2} className="w-[5%] border border-slate-500 px-0 py-0.5 text-center align-middle">O</th><th rowSpan={2} className="w-[5%] border border-slate-500 px-0 py-0.5 text-center align-middle">D</th><th rowSpan={2} className="w-[4%] border border-slate-500 px-0 py-0.5 text-center align-middle">前半</th><th rowSpan={2} className="w-[4%] border border-slate-500 px-0 py-0.5 text-center align-middle">後半</th><th rowSpan={2} className="w-[5%] border border-slate-500 px-0 py-0.5 text-center align-middle">合計</th>
                               </tr>
-                              <tr className="bg-slate-100">{['1','2','3','4','OT','2OT'].map(q => <th key={q} className="w-[4%] border border-slate-500 px-0 py-0.5 text-center">{q}</th>)}</tr>
+                              <tr className="bg-slate-100">{['1','2','3','4','OT','2OT'].map(q => <th key={q} className="w-[2.5%] min-w-0 border border-slate-500 px-0 py-0 text-center text-[9px] leading-none">{q}</th>)}</tr>
                             </thead>
                             <tbody>{players.map(player => {
                               const pe = teamEvents.filter(event => event.playerId === player.id)
@@ -1231,9 +1271,9 @@ function App() {
                               const firstHalf = qPoints[0] + qPoints[1]
                               const secondHalf = qPoints[2] + qPoints[3] + qPoints[4] + qPoints[5]
                               return <tr key={player.id}>
-                                <td className="border border-slate-400 px-0.5 py-[1px]">{player.number}</td><td className="truncate border border-slate-400 px-0.5 py-[1px] font-semibold">{player.name}</td>{[1,2,3,4,5,6].map(q => { const storedLineups = (selectedGame as Game & { quarterLineups?: Record<number, { home: string[]; away: string[] }> }).quarterLineups ?? {}; const qLineup = storedLineups[q]?.[team.id === selectedGame.homeTeamId ? 'home' : 'away'] ?? (q === 1 ? lineup : []); const wasSubbedIn = teamEvents.some(e => e.type === 'substitution' && e.quarter === q && e.playerId === player.id); const wasSubbedOut = teamEvents.some(e => e.type === 'substitution' && e.quarter === q && e.relatedPlayerId === player.id); const appearedInQuarter = teamEvents.some(e => e.quarter === q && (e.playerId === player.id || e.relatedPlayerId === player.id)); const active = wasSubbedIn || wasSubbedOut || appearedInQuarter || qLineup.includes(player.id); return <td key={q} className="w-[4%] border border-slate-400 px-0 py-[1px] text-center font-bold">{active ? '〼' : '☐'}</td> })}<td className="border border-slate-400 px-0 py-[1px] text-left align-top"><div className="flex min-h-[16px] flex-wrap content-start justify-start gap-0">{foulSymbols.length ? foulSymbols.map((symbol, j) => <span key={j} className="inline-block font-bold text-red-700">{symbol}</span>) : <span className="text-slate-300">·</span>}</div></td>
+                                <td className="border border-slate-400 px-0.5 py-[1px]">{player.number}</td><td className="truncate border border-slate-400 px-0 py-[1px] font-semibold">{player.name}</td>{[1,2,3,4,5,6].map(q => { const storedLineups = (selectedGame as Game & { quarterLineups?: Record<number, { home: string[]; away: string[] }> }).quarterLineups ?? {}; const qLineup = storedLineups[q]?.[team.id === selectedGame.homeTeamId ? 'home' : 'away'] ?? (q === 1 ? lineup : []); const wasSubbedIn = teamEvents.some(e => e.type === 'substitution' && e.quarter === q && e.playerId === player.id); const wasSubbedOut = teamEvents.some(e => e.type === 'substitution' && e.quarter === q && e.relatedPlayerId === player.id); const appearedInQuarter = teamEvents.some(e => e.quarter === q && (e.playerId === player.id || e.relatedPlayerId === player.id)); const active = wasSubbedIn || wasSubbedOut || appearedInQuarter || qLineup.includes(player.id); return <td key={q} className="w-[2.5%] min-w-0 border border-slate-400 px-0 py-0 text-center font-bold leading-none"><span className={`block w-full m-0 p-0 ${wasSubbedIn ? '!text-red-600' : '!text-black'}`}>{active ? '/' : ''}</span></td> })}<td className="border border-slate-400 px-0 py-[1px] text-center align-top"><div className="flex min-h-[16px] w-full">{[0,1,2,3,4].map(slot => <span key={slot} className={`flex min-w-0 flex-1 items-start justify-center font-bold text-red-700 ${slot < 4 ? 'border-r border-slate-400' : ''}`}>{foulSymbols[slot] ?? ''}</span>)}</div></td>
                                 {qCells.map((symbols, i) => <td key={i} className="border border-slate-400 px-0 py-[1px] text-left align-top"><div className="flex min-h-[16px] flex-wrap content-start justify-start gap-0">{symbols.length ? symbols.map((symbol, j) => <span key={j} className={`inline-block ${(['/', '〇', '☐', '☐☐', '〼☐'].includes(symbol)) ? 'font-bold text-red-700' : ''}`}>{symbol}</span>) : <span className="text-slate-300">·</span>}</div></td>)}
-                                <td className="border border-slate-400 px-0 py-[1px] text-center">{pe.filter(e => e.type === 'offensiveRebound').length || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center">{pe.filter(e => e.type === 'defensiveRebound').length || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center">{firstHalf || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center">{secondHalf || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center font-black">{qPoints.reduce((sum, n) => sum+n, 0)}</td>
+                                <td className="w-[5%] border border-slate-400 px-0 py-[1px] text-center font-bold" title="オフェンスリバウンド">{pe.filter(e => e.type === 'offensiveRebound').length || ''}</td><td className="w-[5%] border border-slate-400 px-0 py-[1px] text-center font-bold" title="ディフェンスリバウンド">{pe.filter(e => e.type === 'defensiveRebound').length || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center">{firstHalf || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center">{secondHalf || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center font-black">{qPoints.reduce((sum, n) => sum+n, 0)}</td>
                               </tr>
                             })}</tbody>
                             <tfoot><tr className="bg-slate-100 font-black"><td colSpan={8} className="border border-slate-500 p-1">チーム合計</td>{[1,2,3,4,5,6].map(q=><td key={q} className="border border-slate-500 p-1 text-left">{quarterScore(q)}</td>)}<td colSpan={2} className="border border-slate-500 p-1 text-center">—</td><td className="border border-slate-500 p-1 text-center">{quarterScore(1)+quarterScore(2)}</td><td className="border border-slate-500 p-1 text-center">{quarterScore(3)+quarterScore(4)+quarterScore(5)+quarterScore(6)}</td><td className="border border-slate-500 p-1 text-center">{scoreFor(team.id)}</td></tr></tfoot>
