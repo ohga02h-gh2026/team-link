@@ -40,6 +40,8 @@ function App() {
   const [selectedPlayerId, setSelectedPlayerId] = useState<string>('')
   const [recordView, setRecordView] = useState<RecordView>('official')
   const [historyModalOpen, setHistoryModalOpen] = useState(false)
+  const [historyTeamId, setHistoryTeamId] = useState<string>('all')
+  const [historyPlayerId, setHistoryPlayerId] = useState<string>('all')
   const [freeThrowModalOpen, setFreeThrowModalOpen] = useState(false)
   const [pendingShot, setPendingShot] = useState<{ teamId: string; playerId: string; points: 2 | 3; made: boolean } | null>(null)
   const [shotChartOpen, setShotChartOpen] = useState(false)
@@ -595,6 +597,39 @@ function App() {
   const awayTeam = selectedGame
     ? teams.find((team) => team.id === selectedGame.awayTeamId)
     : undefined
+  // 履歴は対戦する2チームと、登録済み選手の背番号で絞り込む。
+  const historyPlayers = homeTeam && awayTeam
+    ? (historyTeamId === homeTeam.id
+        ? homeTeam.players
+        : historyTeamId === awayTeam.id
+          ? awayTeam.players
+          : [...homeTeam.players, ...awayTeam.players])
+    : []
+  const getHistoryEvents = () => {
+    if (!selectedGame || !homeTeam || !awayTeam) return []
+
+    // チームと背番号の両方が選択されていなければ全件表示
+    if (historyTeamId === 'all' || historyPlayerId === 'all') {
+      return selectedGame.events.filter(event => !event.cancelled)
+    }
+
+    const homePlayerIds = new Set(homeTeam.players.map(player => player.id))
+    const awayPlayerIds = new Set(awayTeam.players.map(player => player.id))
+
+    return selectedGame.events.filter(event => {
+      if (event.cancelled) return false
+
+      const eventTeamId = event.teamId ||
+        (event.playerId && homePlayerIds.has(event.playerId) ? homeTeam.id :
+          event.playerId && awayPlayerIds.has(event.playerId) ? awayTeam.id : undefined)
+
+      // チームと背番号の両方が一致した記録だけ表示
+      if (eventTeamId !== historyTeamId) return false
+      if (event.playerId !== historyPlayerId) return false
+
+      return true
+    })
+  }
   // GameEvent の共通型にシュート座標が含まれていないため、
   // シュートチャート内だけで座標付きイベントとして扱います。
   type ShotChartEvent = Game['events'][number] & { shotX?: number; shotY?: number }
@@ -1075,16 +1110,50 @@ function App() {
                   <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-3" role="dialog" aria-modal="true" aria-labelledby="history-title">
                     <div className="flex max-h-[85dvh] w-full max-w-2xl flex-col rounded-xl bg-white p-3 shadow-2xl">
                       <div className="mb-2 flex items-center justify-between gap-2"><h3 id="history-title" className="text-lg font-black">履歴一覧</h3><button type="button" onClick={() => setHistoryModalOpen(false)} className="rounded-lg border px-3 py-2 text-sm font-bold">閉じる</button></div>
-                      <p className="mb-2 text-xs text-slate-500">記録を1件ずつ削除できます。削除した記録は得点・スタッツから除外され、自動で再計算されます。</p>
+                      <p className="mb-2 text-xs text-slate-500">対戦2チームと登録済み背番号で絞り込めます。記録はこの画面から1件ずつ削除できます。</p>
+                      <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <label className="block text-sm font-bold text-slate-700">
+                          チーム
+                          <select
+                            value={historyTeamId}
+                            onChange={event => { setHistoryTeamId(event.target.value); setHistoryPlayerId('all') }}
+                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-normal"
+                          >
+                            <option value="all">全チーム</option>
+                            <option value={homeTeam.id}>{homeTeam.name}</option>
+                            <option value={awayTeam.id}>{awayTeam.name}</option>
+                          </select>
+                        </label>
+                        <label className="block text-sm font-bold text-slate-700">
+                          背番号（登録選手）
+                          <select
+                            value={historyPlayerId}
+                            onChange={event => setHistoryPlayerId(event.target.value)}
+                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-normal"
+                          >
+                            <option value="all">全背番号</option>
+                            {historyPlayers
+                              .slice()
+                              .sort((a, b) => Number(a.number) - Number(b.number))
+                              .map(player => <option key={player.id} value={player.id}>#{player.number} {player.name}</option>)}
+                          </select>
+                        </label>
+                      </div>
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-slate-600">
+                          表示：{getHistoryEvents().length}件
+                        </span>
+                        <button type="button" onClick={() => { setHistoryTeamId('all'); setHistoryPlayerId('all') }} className="rounded-md border border-slate-300 px-2 py-1 text-xs font-bold">フィルター解除</button>
+                      </div>
                       <div className="min-h-0 flex-1 overflow-y-auto">
-                        {selectedGame.events.filter(e => !e.cancelled).slice().reverse().map(event => {
+                        {getHistoryEvents().slice().reverse().map(event => {
                           const eventTeam = event.teamId === homeTeam.id ? homeTeam : awayTeam
                           const eventPlayer = [...homeTeam.players, ...awayTeam.players].find(p => p.id === event.playerId)
                           const labels: Record<string,string> = {assist:'アシスト',block:'ブロック',steal:'スティール',offensiveRebound:'OFリバウンド',defensiveRebound:'DFリバウンド',turnover:'ターンオーバー',foul:'ファウル',substitution:'選手交代',timeout:'タイムアウト'}
                           const recordLabel = event.type === 'shot' ? `${event.points ?? 0}点${event.made ? '成功' : '失敗'}` : event.type === 'freeThrow' ? `フリースロー${event.made ? '成功' : '失敗'}` : labels[event.type] ?? event.type
                           return <div key={event.id} className="flex items-center gap-2 border-b border-slate-100 py-2 text-sm last:border-0"><span className="min-w-0 flex-1">{quarterLabel(event.quarter)} · {eventTeam.name} · #{eventPlayer?.number ?? '?'} {eventPlayer?.name ?? (event.type === 'timeout' ? 'チーム記録' : '選手不明')} <strong>{recordLabel}</strong></span><button type="button" disabled={selectedGame.status === 'completed'} onClick={() => void handleDeleteEvent(event.id)} className="shrink-0 rounded-lg border border-red-200 px-3 py-2 text-xs font-black text-red-700 active:bg-red-100 disabled:opacity-40">削除</button></div>
                         })}
-                        {selectedGame.events.every(e => e.cancelled) && <p className="py-6 text-center text-sm text-slate-500">履歴はありません。</p>}
+                        {getHistoryEvents().length === 0 && <p className="py-6 text-center text-sm text-slate-500">該当する記録はありません。</p>}
                       </div>
                     </div>
                   </div>
